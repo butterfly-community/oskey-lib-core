@@ -8,7 +8,7 @@ members = [
 
 [workspace.package]
 name = "ohw-algorithm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [features]
