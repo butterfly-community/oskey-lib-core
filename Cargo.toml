@@ -19,6 +19,20 @@ bip39 = ["ohw-algorithm-bip39"]
 bip44 = ["ohw-algorithm-bip44"]
 
 [dependencies]
+# Internal dependencies
+
 ohw-algorithm-bip32 = { path = "crates/ohw-algorithm-bip32", optional = true }
 ohw-algorithm-bip39 = { path = "crates/ohw-algorithm-bip39", optional = true }
 ohw-algorithm-bip44 = { path = "crates/ohw-algorithm-bip44", optional = true }
+
+# External dependencies (Sort Lines Ascending)
+
+# Unexported dependnecies
+bitcoin_hashes = { version = ">=0.12, <=0.13", default-features = false }
+crate_rand = { package = "rand", version = ">=0.6.0, <0.9.0", optional = true }
+rand_core = { version = ">=0.4.0, <0.7.0", optional = true }
+serde = { version = "1.0", default-features = false, features = [ "alloc" ], optional = true }
+unicode-normalization = { version = "=0.1.22", default-features = false, optional = true }
+
+# Enabling this feature raises the MSRV to 1.51
+zeroize = { version = "1.5", features = ["zeroize_derive"], optional = true }

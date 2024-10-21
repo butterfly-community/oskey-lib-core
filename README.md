@@ -22,14 +22,16 @@ This crate supports the following features:
 
 ## Usage Example
 
-Here is a simple example of how to use `ohw-algorithm`:
+Here is a simple example of how to use `ohw-algorithm` to generate a new mnemonic in English:
 
 ```rust
-use ohw_algorithm::bip32::add;
+use ohw_algorithm::bip39::Mnemonic;
 
 fn main() {
-    let result = add(2, 3);
-    println!("Result: {}", result);
+    let mnemonic = Mnemonic::generate(24).unwrap();
+    for (i, word) in mnemonic.words().enumerate() {
+        println!("{}. {}", i, word);
+    }
 }
 ```
 
