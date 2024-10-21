@@ -1,0 +1,6 @@
+[package]
+name = "ohw-algorithm-bip39"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
