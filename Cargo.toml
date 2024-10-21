@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "ohw-algorithm",
+    "crates/ohw-algorithm-bip32",
+    "crates/ohw-algorithm-bip44",
+]
+
+[workspace.package]
+name = "ohw-algorithm"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["full"]
+full = ["bip32", "bip44"]
+bip32 = ["ohw-algorithm-bip32"]
+bip44 = ["ohw-algorithm-bip44"]
+
+[dependencies]
+ohw-algorithm-bip32 = { path = "crates/ohw-algorithm-bip32", optional = true }
+ohw-algorithm-bip44 = { path = "crates/ohw-algorithm-bip44", optional = true }
