@@ -118,10 +118,37 @@ void print_eth_private_key(const char *label, const uint8_t *key)
 
 bool hex_to_bytes(const char *hex, uint8_t *bytes, size_t len)
 {
+
+	static const int8_t hex_values[256] = {
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,  1,  2,  3,  4,  5,  6,  7,  8,
+		9,  -1, -1, -1, -1, -1, -1, -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1,
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		-1, -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+
 	if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) {
 		hex += 2;
 	}
-	return hex2bin(hex, len * 2, bytes, len) == 0;
+
+	size_t hex_len = strlen(hex);
+	if (hex_len < len * 2) {
+		return false;
+	}
+
+	for (size_t i = 0; i < len; i++) {
+		int8_t high = hex_values[(unsigned char)hex[i * 2]];
+		int8_t low = hex_values[(unsigned char)hex[i * 2 + 1]];
+
+		if (high == -1 || low == -1) {
+			return false;
+		}
+
+		bytes[i] = (high << 4) | low;
+	}
+
+	return true;
 }
 
 // K256 curve order
@@ -131,81 +158,80 @@ static const uint8_t k256_n[32] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF
 
 int k256_check_sk(const uint8_t *num)
 {
-    int ret = 0;
-    mbedtls_mpi N, X;
+	int ret = 0;
+	mbedtls_mpi N, X;
 
-    mbedtls_mpi_init(&N);
-    mbedtls_mpi_init(&X);
+	mbedtls_mpi_init(&N);
+	mbedtls_mpi_init(&X);
 
-    /* Read num and k256 curve */
-    ret = mbedtls_mpi_read_binary(&X, num, 32);
-    if (ret == 0) {
-        ret = mbedtls_mpi_read_binary(&N, k256_n, 32);
-    }
+	/* Read num and k256 curve */
+	ret = mbedtls_mpi_read_binary(&X, num, 32);
+	if (ret == 0) {
+		ret = mbedtls_mpi_read_binary(&N, k256_n, 32);
+	}
 
-    /* Check 1：Verify that is smaller than the order of the k256 curve */
-    if (ret == 0 && mbedtls_mpi_cmp_mpi(&X, &N) >= 0) {
-        ret = MBEDTLS_ERR_ECP_INVALID_KEY;
-    }
+	/* Check 1：Verify that is smaller than the order of the k256 curve */
+	if (ret == 0 && mbedtls_mpi_cmp_mpi(&X, &N) >= 0) {
+		ret = MBEDTLS_ERR_ECP_INVALID_KEY;
+	}
 
-    /* Check 2: Verify that is not 0 */
-    if (ret == 0 && mbedtls_mpi_cmp_int(&X, 0) == 0) {
-        ret = MBEDTLS_ERR_ECP_INVALID_KEY;
-    }
+	/* Check 2: Verify that is not 0 */
+	if (ret == 0 && mbedtls_mpi_cmp_int(&X, 0) == 0) {
+		ret = MBEDTLS_ERR_ECP_INVALID_KEY;
+	}
 
-    mbedtls_mpi_free(&N);
-    mbedtls_mpi_free(&X);
-    return ret;
+	mbedtls_mpi_free(&N);
+	mbedtls_mpi_free(&X);
+	return ret;
 }
-
 
 int k256_add_modulo(uint8_t *result, const uint8_t *num1, const uint8_t *num2)
 {
-    int ret = 0;
-    mbedtls_mpi IL, SK, N, R;
+	int ret = 0;
+	mbedtls_mpi IL, SK, N, R;
 
-    ret = k256_check_sk(num1);
-    if (ret != 0) {
-        return ret;
-    }
+	ret = k256_check_sk(num1);
+	if (ret != 0) {
+		return ret;
+	}
 
-    mbedtls_mpi_init(&IL);
-    mbedtls_mpi_init(&SK);
-    mbedtls_mpi_init(&N);
-    mbedtls_mpi_init(&R);
+	mbedtls_mpi_init(&IL);
+	mbedtls_mpi_init(&SK);
+	mbedtls_mpi_init(&N);
+	mbedtls_mpi_init(&R);
 
-    if (ret == 0) {
-        ret = mbedtls_mpi_read_binary(&IL, num1, 32);
-    }
-    if (ret == 0) {
-        ret = mbedtls_mpi_read_binary(&SK, num2, 32);
-    }
-    if (ret == 0) {
-        ret = mbedtls_mpi_read_binary(&N, k256_n, 32);
-    }
+	if (ret == 0) {
+		ret = mbedtls_mpi_read_binary(&IL, num1, 32);
+	}
+	if (ret == 0) {
+		ret = mbedtls_mpi_read_binary(&SK, num2, 32);
+	}
+	if (ret == 0) {
+		ret = mbedtls_mpi_read_binary(&N, k256_n, 32);
+	}
 
-    /* Modular addition: : R = (IL + SK) mod N */
-    if (ret == 0) {
-        ret = mbedtls_mpi_add_mpi(&R, &IL, &SK);
-    }
-    if (ret == 0) {
-        ret = mbedtls_mpi_mod_mpi(&R, &R, &N);
-    }
+	/* Modular addition: : R = (IL + SK) mod N */
+	if (ret == 0) {
+		ret = mbedtls_mpi_add_mpi(&R, &IL, &SK);
+	}
+	if (ret == 0) {
+		ret = mbedtls_mpi_mod_mpi(&R, &R, &N);
+	}
 
-    if (ret == 0) {
-        ret = mbedtls_mpi_write_binary(&R, result, 32);
-    }
+	if (ret == 0) {
+		ret = mbedtls_mpi_write_binary(&R, result, 32);
+	}
 
-    if (ret == 0) {
-        ret = k256_check_sk(result);
-    }
+	if (ret == 0) {
+		ret = k256_check_sk(result);
+	}
 
-    mbedtls_mpi_free(&IL);
-    mbedtls_mpi_free(&SK);
-    mbedtls_mpi_free(&N);
-    mbedtls_mpi_free(&R);
+	mbedtls_mpi_free(&IL);
+	mbedtls_mpi_free(&SK);
+	mbedtls_mpi_free(&N);
+	mbedtls_mpi_free(&R);
 
-    return ret;
+	return ret;
 }
 
 psa_status_t k256_get_public_key(const uint8_t *private_key, uint8_t *public_key)
