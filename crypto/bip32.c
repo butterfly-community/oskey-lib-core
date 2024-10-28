@@ -350,7 +350,7 @@ void bip32_test(uint8_t *master_sk, uint8_t *chain_code)
 								  is_hardened[i], &child_key);
 		if (status != PSA_SUCCESS) {
 			printf("Derive child key %d, status: %d\n", i + 1, status);
-			return 1;
+			return;
 		}
 		current_key = child_key;
 	}
