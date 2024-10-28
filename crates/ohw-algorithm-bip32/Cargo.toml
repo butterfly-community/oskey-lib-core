@@ -1,6 +1,0 @@
-[package]
-name = "ohw-algorithm-bip32"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
