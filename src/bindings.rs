@@ -95,9 +95,27 @@ pub const SIG_ATOMIC_MAX: u32 = 2147483647;
 pub const SIZE_MAX: i32 = -1;
 pub const WINT_MIN: u32 = 0;
 pub const WINT_MAX: u32 = 4294967295;
-extern "C" {
-    pub fn test_add(a: ::core::ffi::c_int, b: ::core::ffi::c_int) -> ::core::ffi::c_int;
+pub const true_: u32 = 1;
+pub const false_: u32 = 0;
+pub const __bool_true_false_are_defined: u32 = 1;
+pub type wchar_t = ::core::ffi::c_int;
+#[repr(C)]
+#[repr(align(16))]
+#[derive(Debug, Copy, Clone)]
+pub struct max_align_t {
+    pub __clang_max_align_nonce1: ::core::ffi::c_longlong,
+    pub __bindgen_padding_0: u64,
+    pub __clang_max_align_nonce2: u128,
 }
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of max_align_t"][::core::mem::size_of::<max_align_t>() - 32usize];
+    ["Alignment of max_align_t"][::core::mem::align_of::<max_align_t>() - 16usize];
+    ["Offset of field: max_align_t::__clang_max_align_nonce1"]
+        [::core::mem::offset_of!(max_align_t, __clang_max_align_nonce1) - 0usize];
+    ["Offset of field: max_align_t::__clang_max_align_nonce2"]
+        [::core::mem::offset_of!(max_align_t, __clang_max_align_nonce2) - 16usize];
+};
 pub type __u_char = ::core::ffi::c_uchar;
 pub type __u_short = ::core::ffi::c_ushort;
 pub type __u_int = ::core::ffi::c_uint;
@@ -189,6 +207,40 @@ pub type uint_fast32_t = ::core::ffi::c_ulong;
 pub type uint_fast64_t = ::core::ffi::c_ulong;
 pub type intmax_t = __intmax_t;
 pub type uintmax_t = __uintmax_t;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct extended_key_t {
+    pub private_key: [u8; 32usize],
+    pub chain_code: [u8; 32usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of extended_key_t"][::core::mem::size_of::<extended_key_t>() - 64usize];
+    ["Alignment of extended_key_t"][::core::mem::align_of::<extended_key_t>() - 1usize];
+    ["Offset of field: extended_key_t::private_key"]
+        [::core::mem::offset_of!(extended_key_t, private_key) - 0usize];
+    ["Offset of field: extended_key_t::chain_code"]
+        [::core::mem::offset_of!(extended_key_t, chain_code) - 32usize];
+};
+extern "C" {
+    pub fn hd_node_from_seed(
+        seed: *const u8,
+        seed_len: ::core::ffi::c_int,
+        master_sk: *mut u8,
+        chain_code: *mut u8,
+    ) -> ::core::ffi::c_int;
+}
+extern "C" {
+    pub fn generate_xprv(
+        master_key: *const u8,
+        chain_code: *const u8,
+        xprv_out: *mut ::core::ffi::c_char,
+        xprv_size: *mut usize,
+    ) -> bool;
+}
+extern "C" {
+    pub fn bip32_test(master_sk: *mut u8, chain_code: *mut u8);
+}
 extern "C" {
     pub fn mnemonic_from_data(
         data: *const u8,

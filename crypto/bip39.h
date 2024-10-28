@@ -5,8 +5,6 @@
 #define CONFIDENTIAL
 #endif
 
-#include <stdint.h>
-
 const char *mnemonic_from_data(const uint8_t *data, int strength);
 
 int mnemonic_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[512 / 8]);

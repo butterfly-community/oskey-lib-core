@@ -6,6 +6,11 @@ find_package(MbedTLS REQUIRED)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+add_compile_options(
+        -Wall
+        -Wreturn-local-addr
+)
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/crypto/CMakeLists.txt)
 
 target_link_libraries(crypto STATIC MbedTLS::mbedtls MbedTLS::mbedcrypto MbedTLS::mbedx509)

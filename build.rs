@@ -18,13 +18,12 @@ fn main() {
     println!("cargo:rustc-link-lib=static=mbedcrypto");
 
     bindgen::Builder::default()
-        .headers(["crypto/test.h", "crypto/bip39.h"])
+        .headers(["crypto/wrapper.h"])
         .use_core()
         .derive_debug(true)
-        .wrap_unsafe_ops(true)
         .generate_comments(true)
         .generate()
-        .expect("Unable to generate bindings")
+        .unwrap()
         .write_to_file("src/bindings.rs")
         .unwrap();
 }
