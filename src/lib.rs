@@ -1,14 +1,18 @@
+#![no_std]
+
 #[allow(warnings)]
 mod bindings {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+    include!("bindings.rs");
 }
 
 pub use bindings::mnemonic_from_data;
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
 
     use super::*;
+    use std::{println, string::ToString};
 
     #[test]
     fn test() {
