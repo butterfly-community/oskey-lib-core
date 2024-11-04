@@ -1,7 +1,7 @@
-#[cfg(not(feature = "builtin"))]
+#[cfg(feature = "build")]
 use cmake::Config;
 
-#[cfg(not(feature = "builtin"))]
+#[cfg(feature = "build")]
 fn main() {
     let dst = Config::new("./")
         .define("MBEDTLS_USE_STATIC_LIBS", "ON")
@@ -28,5 +28,6 @@ fn main() {
         .unwrap();
 }
 
-#[cfg(feature = "builtin")]
+
+#[cfg(not(feature = "build"))]
 fn main() {}

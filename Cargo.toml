@@ -7,13 +7,29 @@ license = ""
 
 
 [features]
-default = []
-std = []
-builtin = []
+default = ["build", "crypto-rs"]
+# Crypto backend selection (mutually exclusive):
+# Note: enable both 'crypto-psa' and 'build' features to link against host mbedtls
+crypto-psa = []
+crypto-rs = ["dep:sha2"]
+build = []
 
 [dependencies]
-hex = { version = "0.4", default-features = false, features = ['alloc']}
+hex = { version = "0.4", default-features = false, features = ['alloc'] }
 anyhow = { version = "1.0", default-features = false }
+heapless = { version = "0.8", default-features = false, features = ['serde'] }
+zerocopy = { version = "0.8", default-features = false, features = ['alloc'] }
+bitvec = { version = "1.0", default-features = false, features = [
+  'alloc',
+  'serde',
+] }
+serde = { version = "1.0", default-features = false, features = [
+  'alloc',
+  'derive',
+] }
+
+# If not use mbedtls feature
+sha2 = { version = "0.10", default-features = false, optional = true }
 
 [build-dependencies]
 cmake = { version = "0.1" }
