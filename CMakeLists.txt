@@ -6,6 +6,9 @@ find_package(MbedTLS REQUIRED)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "")
+set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "")
+
 add_compile_options(
         -Wall
         -Wreturn-local-addr

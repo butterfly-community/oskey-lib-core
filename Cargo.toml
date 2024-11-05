@@ -11,7 +11,7 @@ default = ["build", "crypto-psa"]
 # Crypto backend selection (mutually exclusive):
 # Note: enable both 'crypto-psa' and 'build' features to link against host mbedtls
 crypto-psa = []
-crypto-rs = ["dep:sha2"]
+crypto-rs = ["dep:sha2", "dep:pbkdf2"]
 build = []
 
 [dependencies]
@@ -30,6 +30,9 @@ serde = { version = "1.0", default-features = false, features = [
 
 # If not use mbedtls feature
 sha2 = { version = "0.10", default-features = false, optional = true }
+pbkdf2 = { version = "0.12", default-features = false, features = [
+  "simple",
+], optional = true }
 
 [build-dependencies]
 cmake = { version = "0.1" }

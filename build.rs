@@ -5,7 +5,6 @@ use std::time::SystemTime;
 
 #[cfg(feature = "build")]
 fn main() {
-
     println!("cargo:rerun-if-changed={:?}", SystemTime::now());
 
     let dst = Config::new("./")
@@ -21,6 +20,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=crypto");
     println!("cargo:rustc-link-lib=static=mbedtls");
     println!("cargo:rustc-link-lib=static=mbedcrypto");
+    println!("cargo:rustc-link-lib=static=mbedx509");
 
     bindgen::Builder::default()
         .headers(["psa/wrapper.h"])
@@ -32,7 +32,6 @@ fn main() {
         .write_to_file("src/bindings.rs")
         .unwrap();
 }
-
 
 #[cfg(not(feature = "build"))]
 fn main() {}
