@@ -1,9 +1,9 @@
 use anyhow::{anyhow, bail, Result};
 use bitvec::{field::BitField, order::Msb0, vec::BitVec};
 use heapless::Vec;
-use sha2::{Digest, Sha256};
 
-use super::data::ENGLISH_WORDS;
+use crate::crypto::Hash;
+use crate::data::ENGLISH_WORDS;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mnemonic {
@@ -25,7 +25,7 @@ impl Mnemonic {
         entropy_bits.extend_from_raw_slice(entropy);
 
         // Calculate SHA256 hash of entropy
-        let hash = Sha256::digest(entropy).to_vec();
+        let hash = Hash::sha256(entropy)?;
         // ENT / 32, where ENT is entropy length in bits
         let checksum_len = entropy_len / 32;
 

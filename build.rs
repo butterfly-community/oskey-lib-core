@@ -1,8 +1,13 @@
 #[cfg(feature = "build")]
 use cmake::Config;
+#[cfg(feature = "build")]
+use std::time::SystemTime;
 
 #[cfg(feature = "build")]
 fn main() {
+
+    println!("cargo:rerun-if-changed={:?}", SystemTime::now());
+
     let dst = Config::new("./")
         .define("MBEDTLS_USE_STATIC_LIBS", "ON")
         .define("BUILD_SHARED_LIBS", "OFF")
@@ -18,7 +23,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=mbedcrypto");
 
     bindgen::Builder::default()
-        .headers(["crypto/wrapper.h"])
+        .headers(["psa/wrapper.h"])
         .use_core()
         .derive_debug(true)
         .generate_comments(true)
