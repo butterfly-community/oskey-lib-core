@@ -12,6 +12,8 @@ pub struct Hash;
 
 pub struct PBKDF2;
 
+pub struct HMAC;
+
 impl Hash {
     #[cfg(feature = "crypto-psa")]
     pub fn sha256(input: &[u8]) -> Result<[u8; 32]> {
@@ -58,3 +60,5 @@ impl PBKDF2 {
         }
     }
 }
+
+impl HMAC {}

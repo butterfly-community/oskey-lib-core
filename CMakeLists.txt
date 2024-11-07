@@ -2,12 +2,11 @@ cmake_minimum_required(VERSION 3.20.0)
 
 project(wallets)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_VERBOSE_MAKEFILE ON)
+
 find_package(MbedTLS REQUIRED)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "")
-set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "")
 
 add_compile_options(
         -Wall
