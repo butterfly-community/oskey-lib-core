@@ -61,4 +61,6 @@ impl PBKDF2 {
     }
 }
 
-impl HMAC {}
+impl HMAC {
+    pub fn hmac_sha512() {}
+}

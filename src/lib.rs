@@ -7,6 +7,6 @@ mod bindings {
 }
 mod mnemonic;
 
-mod crypto;
+mod path;
 
-mod data;
+mod crypto;
