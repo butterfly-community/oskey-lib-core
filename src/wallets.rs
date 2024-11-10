@@ -1,37 +1,8 @@
-use anyhow::{anyhow, Result};
-use heapless::String;
+use anyhow::Result;
 
-
-use crate::crypto::K256;
-use crate::path::DerivationPath;
-use crate::{
-    crypto::{Hash, HMAC},
-    path::ChildNumber,
-};
-
-struct VecBuilder<const N: usize> {
-    inner: heapless::Vec<u8, N>,
-}
-
-impl<const N: usize> VecBuilder<N> {
-    fn new() -> Self {
-        Self {
-            inner: heapless::Vec::new(),
-        }
-    }
-
-    fn push(&mut self, byte: u8) -> Result<(), anyhow::Error> {
-        self.inner.push(byte).map_err(|e| anyhow!(e))
-    }
-
-    fn extend(&mut self, data: &[u8]) -> Result<(), anyhow::Error> {
-        self.inner.extend_from_slice(data).map_err(|_| anyhow!("Buffer full"))
-    }
-
-    fn build(self) -> heapless::Vec<u8, N> {
-        self.inner
-    }
-}
+use crate::crypto::{HMAC, K256};
+use crate::path::{ChildNumber, DerivationPath};
+use crate::utils::ByteBuilder;
 
 #[derive(Clone, PartialEq, Hash, Eq, Debug)]
 pub struct ExtendedPrivKey {
@@ -58,52 +29,28 @@ impl ExtendedPrivKey {
     }
 
     pub fn child(&self, child: ChildNumber) -> Result<ExtendedPrivKey> {
-        let mut builder = VecBuilder::<128>::new();
+        let mut bytes = ByteBuilder::<128>::new();
 
         if child.is_normal() {
             let encoded_point = K256::export_pk_compressed(&self.secret_key)?;
-            builder.extend(&encoded_point)?;
+            bytes.extend(&encoded_point)?;
         } else {
-            builder.push(0)?;
-            builder.extend(&self.secret_key)?;
+            bytes.push(0)?;
+            bytes.extend(&self.secret_key)?;
         };
 
-        builder.extend(&child.to_bytes())?;
+        bytes.extend(&child.to_bytes())?;
 
-        let result = HMAC::hmac_sha512(&self.chain_code, &builder.build())?;
+        let result = HMAC::hmac_sha512(&self.chain_code, &bytes.build())?;
 
-        let (il, chain_code) = result.split_at(32);
+        let (tweak, chain_code) = result.split_at(32);
 
-        let new_secret_key = K256::add(&self.secret_key, il)?;
+        let child_key = K256::add(&self.secret_key, tweak)?;
 
         Ok(ExtendedPrivKey {
-            secret_key: new_secret_key.try_into()?,
+            secret_key: child_key.try_into()?,
             chain_code: chain_code.try_into()?,
         })
-    }
-
-    pub fn to_xprv(&self) -> String<111> {
-        let mut data = [0u8; 78];
-
-        data[0..4].copy_from_slice(&[0x04, 0x88, 0xAD, 0xE4]);
-        data[4] = 0;
-        // 5..9 and 9..13 already zero
-        data[13..45].copy_from_slice(&self.chain_code);
-        data[45] = 0;
-        data[46..78].copy_from_slice(&self.secret_key);
-
-        let hash1 = Hash::sha256(&data).unwrap();
-
-        let hash2 = Hash::sha256(&hash1).unwrap();
-
-        let mut final_data = [0u8; 82];
-        final_data[..78].copy_from_slice(&data);
-        final_data[78..].copy_from_slice(&hash2[..4]);
-
-        let mut result: String<111> = String::new();
-        let test = bs58::encode(&final_data);
-        result.push_str(&test.into_string()).unwrap();
-        result
     }
 }
 

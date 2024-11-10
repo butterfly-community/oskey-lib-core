@@ -12,3 +12,5 @@ mod path;
 mod crypto;
 
 mod wallets;
+
+mod utils;
