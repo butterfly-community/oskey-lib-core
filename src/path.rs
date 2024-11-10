@@ -3,7 +3,7 @@ use core::str::FromStr;
 
 const HARDENED_BIT: u32 = 1 << 31;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Hash, Eq, Debug)]
 pub struct ChildNumber(u32);
 
 impl ChildNumber {
@@ -46,7 +46,7 @@ impl FromStr for ChildNumber {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct DerivationPath {
     path: heapless::Vec<ChildNumber, 32>,
 }
@@ -72,6 +72,16 @@ impl FromStr for DerivationPath {
     }
 }
 
+impl DerivationPath {
+	pub fn as_ref(&self) -> &[ChildNumber] {
+		&self.path
+	}
+
+	pub fn iter(&self) -> impl Iterator<Item = &ChildNumber> {
+		self.path.iter()
+	}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,20 +90,20 @@ mod tests {
     #[test]
     fn test_derivation_path() {
         let path: DerivationPath = "m/44'/60'/0'/0".parse().unwrap();
+        let expected_path = Vec::from_slice(&[
+            ChildNumber(44 | HARDENED_BIT),
+            ChildNumber(60 | HARDENED_BIT),
+            ChildNumber(0 | HARDENED_BIT),
+            ChildNumber(0),
+        ])
+        .unwrap();
 
-        let expected_path = {
-            let mut v = Vec::new();
-            v.extend_from_slice(&[
-                ChildNumber(44 | HARDENED_BIT),
-                ChildNumber(60 | HARDENED_BIT),
-                ChildNumber(0 | HARDENED_BIT),
-                ChildNumber(0),
-            ])
-            .unwrap();
-            DerivationPath { path: v }
-        };
-
-        assert_eq!(path, expected_path);
+        assert_eq!(
+            path,
+            DerivationPath {
+                path: expected_path
+            }
+        );
     }
 
     #[test]

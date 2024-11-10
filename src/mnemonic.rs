@@ -326,6 +326,7 @@ impl Mnemonic {
 #[cfg(test)]
 mod test {
     extern crate alloc;
+
     use super::*;
     use alloc::{vec, vec::Vec};
 
@@ -507,11 +508,27 @@ mod test {
         for case in &test_vectors {
             let mnemonic = Mnemonic::verify(case[1]).unwrap();
             let seed = mnemonic.to_seed("OHW").unwrap();
-            assert_eq!(hex::encode(seed), case[2]);
+            assert_eq!(hex::encode(seed.clone()), case[2]);
 
             let mnemonic = Mnemonic::verify(case[1]).unwrap();
             let seed = mnemonic.to_seed("TREZOR").unwrap();
-            assert_eq!(hex::encode(seed), case[3])
+            assert_eq!(hex::encode(seed), case[3]);
         }
+    }
+
+    #[test]
+    pub fn test_mnemonic_verify_invalid() {
+        let test_invalid_vectors = vec![
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about abandon",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
+        ];
+
+        for case in &test_invalid_vectors {
+            let mnemonic = Mnemonic::verify(case);
+            assert!(mnemonic.is_err());
+        }
+
     }
 }

@@ -10,3 +10,5 @@ mod mnemonic;
 mod path;
 
 mod crypto;
+
+mod wallets;

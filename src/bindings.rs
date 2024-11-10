@@ -223,3 +223,25 @@ extern "C" {
         rounds: usize,
     ) -> i32;
 }
+extern "C" {
+    pub fn psa_hmac_sha512_wrapper(
+        message: *const u8,
+        message_len: usize,
+        key: *const u8,
+        key_len: usize,
+        output: *mut u8,
+    ) -> i32;
+}
+extern "C" {
+    pub fn psa_k256_derive_pk(private_key: *const u8, public_key: *mut u8) -> i32;
+}
+extern "C" {
+    pub fn psa_k256_derive_pk_uncompressed(private_key: *const u8, public_key: *mut u8) -> i32;
+}
+extern "C" {
+    pub fn psa_k256_add_num(
+        num1: *const u8,
+        num2: *const u8,
+        result: *mut u8,
+    ) -> ::core::ffi::c_int;
+}
