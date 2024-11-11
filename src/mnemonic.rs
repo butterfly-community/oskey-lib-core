@@ -14,18 +14,25 @@ pub struct Mnemonic {
 }
 
 impl Mnemonic {
-    pub fn new(phrase: &str) -> Result<Self> {
+    pub fn from_phrase(phrase: &str) -> Result<Self> {
         let original_words: Vec<&str, 24> = phrase.trim().split_whitespace().collect();
         let original_bits = Self::words_to_bits(&original_words)?;
 
         let entropy = Self::bits_to_entropy(&original_bits)?;
-        let rebuilt_bits = Self::entropy_to_bits(&entropy)?;
+        let rebuilt_bits = Self::entropy_with_checksum(&entropy)?;
 
         if original_bits != rebuilt_bits {
             bail!("Checksum mismatch")
         }
 
         let mnemonic = Self::bits_to_words(&original_bits)?;
+
+        Ok(Self { words: mnemonic })
+    }
+
+    pub fn from_entropy(entropy: &[u8]) -> Result<Self, anyhow::Error> {
+        let full_bits = Self::entropy_with_checksum(entropy)?;
+        let mnemonic = Self::bits_to_words(&full_bits)?;
 
         Ok(Self { words: mnemonic })
     }
@@ -37,14 +44,18 @@ impl Mnemonic {
         PBKDF2::hmac_sha512(self.words.join(" ").as_str(), new_salt.as_str(), 2048)
     }
 
-    pub fn entropy_to_words(entropy: &[u8]) -> Result<Self, anyhow::Error> {
-        let full_bits = Self::entropy_to_bits(entropy)?;
-        let mnemonic = Self::bits_to_words(&full_bits)?;
+    fn bits_to_words(bits: &BitVec<u8, Msb0>) -> Result<Vec<&'static str, 24>> {
+        let mut words = Vec::new();
 
-        Ok(Self { words: mnemonic })
+        for index_bits in bits.chunks(11) {
+            let index = index_bits.load_be::<u16>() as usize;
+            words.push(ENGLISH_WORDS[index]).map_err(|e| anyhow!(e))?;
+        }
+
+        Ok(words)
     }
 
-    fn entropy_to_bits(entropy: &[u8]) -> Result<BitVec<u8, Msb0>> {
+    fn entropy_with_checksum(entropy: &[u8]) -> Result<BitVec<u8, Msb0>> {
         let entropy_len = entropy.len() * 8;
 
         if !(128..=256).contains(&entropy_len) || entropy_len % 32 != 0 {
@@ -98,17 +109,6 @@ impl Mnemonic {
         }
 
         Ok(entropy_bytes)
-    }
-
-    fn bits_to_words(bits: &BitVec<u8, Msb0>) -> Result<Vec<&'static str, 24>> {
-        let mut words = Vec::new();
-
-        for index_bits in bits.chunks(11) {
-            let index = index_bits.load_be::<u16>() as usize;
-            words.push(ENGLISH_WORDS[index]).map_err(|e| anyhow!(e))?;
-        }
-
-        Ok(words)
     }
 }
 
@@ -277,17 +277,17 @@ mod test {
 
         for case in &test_vectors {
             let entropy = hex::decode(case[0]).unwrap();
-            let mnemonic = Mnemonic::entropy_to_words(&entropy).unwrap();
+            let mnemonic = Mnemonic::from_entropy(&entropy).unwrap();
             assert!(mnemonic.words.join(" ").as_str().eq(case[1]));
         }
     }
 
     #[test]
-    pub fn test_mnemonic_new() {
+    pub fn test_mnemonic_from_phrase() {
         let test_vectors = get_test_case();
 
         for case in &test_vectors {
-            let mnemonic = Mnemonic::new(case[1]).unwrap();
+            let mnemonic = Mnemonic::from_phrase(case[1]).unwrap();
             assert!(mnemonic.words.join(" ").as_str().eq(case[1]));
         }
     }
@@ -297,11 +297,11 @@ mod test {
         let test_vectors = get_test_case();
 
         for case in &test_vectors {
-            let mnemonic = Mnemonic::new(case[1]).unwrap();
+            let mnemonic = Mnemonic::from_phrase(case[1]).unwrap();
             let seed = mnemonic.to_seed("OHW").unwrap();
             assert_eq!(hex::encode(seed.clone()), case[2]);
 
-            let mnemonic = Mnemonic::new(case[1]).unwrap();
+            let mnemonic = Mnemonic::from_phrase(case[1]).unwrap();
             let seed = mnemonic.to_seed("TREZOR").unwrap();
             assert_eq!(hex::encode(seed), case[3]);
         }
@@ -317,7 +317,7 @@ mod test {
         ];
 
         for case in &test_invalid_vectors {
-            let mnemonic = Mnemonic::new(case);
+            let mnemonic = Mnemonic::from_phrase(case);
             assert!(mnemonic.is_err());
         }
     }
