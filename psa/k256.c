@@ -1,19 +1,8 @@
 #include <psa/crypto.h>
+#include <string.h>
 #include "option.h"
 
-int32_t psa_k256_derive_pk(const uint8_t *private_key, uint8_t *public_key)
-{
-	uint8_t u_pk[65];
-	psa_status_t status = psa_k256_derive_pk_uncompressed(private_key, u_pk);
 
-	if (status != PSA_SUCCESS) {
-		return status;
-	}
-	public_key[0] = (u_pk[64] & 1) ? 0x03 : 0x02;
-	memcpy(public_key + 1, u_pk + 1, 32);
-
-	return PSA_SUCCESS;
-}
 
 int32_t psa_k256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *public_key)
 {
@@ -43,6 +32,20 @@ int32_t psa_k256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *pub
 	}
 
 	return status;
+}
+
+int32_t psa_k256_derive_pk(const uint8_t *private_key, uint8_t *public_key)
+{
+	uint8_t u_pk[65];
+	psa_status_t status = psa_k256_derive_pk_uncompressed(private_key, u_pk);
+
+	if (status != PSA_SUCCESS) {
+		return status;
+	}
+	public_key[0] = (u_pk[64] & 1) ? 0x03 : 0x02;
+	memcpy(public_key + 1, u_pk + 1, 32);
+
+	return PSA_SUCCESS;
 }
 
 // K256 curve order
