@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::crypto::{HMAC, K256};
+use crate::alg::{HMAC, K256};
 use crate::path::{ChildNumber, DerivationPath};
 use crate::utils::ByteVec;
 

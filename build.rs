@@ -29,7 +29,7 @@ fn main() {
         .generate_comments(true)
         .generate()
         .unwrap()
-        .write_to_file("src/bindings.rs")
+        .write_to_file("src/alg/bindings.rs")
         .unwrap();
 }
 

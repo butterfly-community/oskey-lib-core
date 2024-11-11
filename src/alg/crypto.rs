@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Ok, Result};
 
 #[cfg(feature = "crypto-psa")]
-use crate::bindings;
+use crate::alg::bindings;
 
 #[cfg(feature = "crypto-rs")]
 use hmac::{Hmac, Mac};

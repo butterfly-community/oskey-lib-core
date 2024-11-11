@@ -3,10 +3,7 @@ use bitvec::{field::BitField, order::Msb0, vec::BitVec};
 use core::fmt::Write;
 use heapless::{String, Vec};
 
-use crate::{
-    crypto::{Hash, PBKDF2},
-    data::ENGLISH_WORDS,
-};
+use crate::alg::{Hash, PBKDF2, ENGLISH_WORDS};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mnemonic {
@@ -44,17 +41,6 @@ impl Mnemonic {
         PBKDF2::hmac_sha512(self.words.join(" ").as_str(), new_salt.as_str(), 2048)
     }
 
-    fn bits_to_words(bits: &BitVec<u8, Msb0>) -> Result<Vec<&'static str, 24>> {
-        let mut words = Vec::new();
-
-        for index_bits in bits.chunks(11) {
-            let index = index_bits.load_be::<u16>() as usize;
-            words.push(ENGLISH_WORDS[index]).map_err(|e| anyhow!(e))?;
-        }
-
-        Ok(words)
-    }
-
     fn entropy_with_checksum(entropy: &[u8]) -> Result<BitVec<u8, Msb0>> {
         let entropy_len = entropy.len() * 8;
 
@@ -73,6 +59,17 @@ impl Mnemonic {
         full_bits.truncate(entropy_len + checksum_len);
 
         Ok(full_bits)
+    }
+
+    fn bits_to_words(bits: &BitVec<u8, Msb0>) -> Result<Vec<&'static str, 24>> {
+        let mut words = Vec::new();
+
+        for index_bits in bits.chunks(11) {
+            let index = index_bits.load_be::<u16>() as usize;
+            words.push(ENGLISH_WORDS[index]).map_err(|e| anyhow!(e))?;
+        }
+
+        Ok(words)
     }
 
     fn words_to_bits(words: &[&str]) -> Result<BitVec<u8, Msb0>> {
