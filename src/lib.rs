@@ -10,5 +10,3 @@ mod alg;
 mod wallets;
 
 mod utils;
-
-mod data;
