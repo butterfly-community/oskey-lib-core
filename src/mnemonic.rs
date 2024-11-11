@@ -14,14 +14,7 @@ pub struct Mnemonic {
 }
 
 impl Mnemonic {
-    pub fn from(entropy: &[u8]) -> Result<Self, anyhow::Error> {
-        let full_bits = Self::entropy_to_bits(entropy)?;
-        let mnemonic = Self::bits_to_words(&full_bits)?;
-
-        Ok(Self { words: mnemonic })
-    }
-
-    pub fn verify(phrase: &str) -> Result<Self> {
+    pub fn new(phrase: &str) -> Result<Self> {
         let original_words: Vec<&str, 24> = phrase.trim().split_whitespace().collect();
         let original_bits = Self::words_to_bits(&original_words)?;
 
@@ -42,6 +35,13 @@ impl Mnemonic {
         write!(new_salt, "mnemonic{}", salt)?;
 
         PBKDF2::hmac_sha512(self.words.join(" ").as_str(), new_salt.as_str(), 2048)
+    }
+
+    pub fn entropy_to_words(entropy: &[u8]) -> Result<Self, anyhow::Error> {
+        let full_bits = Self::entropy_to_bits(entropy)?;
+        let mnemonic = Self::bits_to_words(&full_bits)?;
+
+        Ok(Self { words: mnemonic })
     }
 
     fn entropy_to_bits(entropy: &[u8]) -> Result<BitVec<u8, Msb0>> {
@@ -186,7 +186,8 @@ mod test {
             [
                 "8080808080808080808080808080808080808080808080808080808080808080",
                 "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless",
-                "33515e664acd79a8a239a3dae48743cde7e31195f8aa6cf5e1aa377747530cfacee3c33f6d5f852df257b0cb619425f98d80b10ce2fd6c93ed944cef8637bd86","c0c519bd0e91a2ed54357d9d1ebef6f5af218a153624cf4f2da911a0ed8f7a09e2ef61af0aca007096df430022f7a2b6fb91661a9589097069720d015e4e982f",
+                "33515e664acd79a8a239a3dae48743cde7e31195f8aa6cf5e1aa377747530cfacee3c33f6d5f852df257b0cb619425f98d80b10ce2fd6c93ed944cef8637bd86",
+                "c0c519bd0e91a2ed54357d9d1ebef6f5af218a153624cf4f2da911a0ed8f7a09e2ef61af0aca007096df430022f7a2b6fb91661a9589097069720d015e4e982f",
             ],
             [
                 "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -215,7 +216,8 @@ mod test {
             [
                 "c0ba5a8e914111210f2bd131f3d5e08d",
                 "scheme spot photo card baby mountain device kick cradle pact join borrow",
-                "7f2cda929cc57046b2b1e7255d4a2505b09e97c9c1b2a1bf6c798abab7f66c421a14ac71c4941f545ab8636f41ed4dae857f019d1efc468b7d4d2acfef993ad0", "ea725895aaae8d4c1cf682c1bfd2d358d52ed9f0f0591131b559e2724bb234fca05aa9c02c57407e04ee9dc3b454aa63fbff483a8b11de949624b9f1831a9612",
+                "7f2cda929cc57046b2b1e7255d4a2505b09e97c9c1b2a1bf6c798abab7f66c421a14ac71c4941f545ab8636f41ed4dae857f019d1efc468b7d4d2acfef993ad0",
+                "ea725895aaae8d4c1cf682c1bfd2d358d52ed9f0f0591131b559e2724bb234fca05aa9c02c57407e04ee9dc3b454aa63fbff483a8b11de949624b9f1831a9612",
             ],
             [
                 "6d9be1ee6ebd27a258115aad99b7317b9c8d28b6d76431c3",
@@ -270,22 +272,22 @@ mod test {
     }
 
     #[test]
-    pub fn test_mnemonic_from() {
+    pub fn test_mnemonic_from_entropy() {
         let test_vectors = get_test_case();
 
         for case in &test_vectors {
             let entropy = hex::decode(case[0]).unwrap();
-            let mnemonic = Mnemonic::from(&entropy).unwrap();
+            let mnemonic = Mnemonic::entropy_to_words(&entropy).unwrap();
             assert!(mnemonic.words.join(" ").as_str().eq(case[1]));
         }
     }
 
     #[test]
-    pub fn test_mnemonic_verify() {
+    pub fn test_mnemonic_new() {
         let test_vectors = get_test_case();
 
         for case in &test_vectors {
-            let mnemonic = Mnemonic::verify(case[1]).unwrap();
+            let mnemonic = Mnemonic::new(case[1]).unwrap();
             assert!(mnemonic.words.join(" ").as_str().eq(case[1]));
         }
     }
@@ -295,11 +297,11 @@ mod test {
         let test_vectors = get_test_case();
 
         for case in &test_vectors {
-            let mnemonic = Mnemonic::verify(case[1]).unwrap();
+            let mnemonic = Mnemonic::new(case[1]).unwrap();
             let seed = mnemonic.to_seed("OHW").unwrap();
             assert_eq!(hex::encode(seed.clone()), case[2]);
 
-            let mnemonic = Mnemonic::verify(case[1]).unwrap();
+            let mnemonic = Mnemonic::new(case[1]).unwrap();
             let seed = mnemonic.to_seed("TREZOR").unwrap();
             assert_eq!(hex::encode(seed), case[3]);
         }
@@ -315,7 +317,7 @@ mod test {
         ];
 
         for case in &test_invalid_vectors {
-            let mnemonic = Mnemonic::verify(case);
+            let mnemonic = Mnemonic::new(case);
             assert!(mnemonic.is_err());
         }
     }
