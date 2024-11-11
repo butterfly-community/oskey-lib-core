@@ -110,12 +110,7 @@ impl K256 {
     #[cfg(feature = "crypto-psa")]
     pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
         let mut pk = [0u8; 33];
-        let status = unsafe {
-            bindings::psa_k256_derive_pk(
-                sk.as_ptr(),
-                pk.as_mut_ptr(),
-            )
-        };
+        let status = unsafe { bindings::psa_k256_derive_pk(sk.as_ptr(), pk.as_mut_ptr()) };
         if status == 0 {
             Ok(pk)
         } else {
@@ -139,11 +134,7 @@ impl K256 {
     pub fn add(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
         let mut result = [0u8; 32];
         let status = unsafe {
-            bindings::psa_k256_add_num(
-                num1.as_ptr(),
-                num2.as_ptr(),
-                result.as_mut_ptr(),
-            )
+            bindings::psa_k256_add_num(num1.as_ptr(), num2.as_ptr(), result.as_mut_ptr())
         };
         if status == 0 {
             Ok(result)

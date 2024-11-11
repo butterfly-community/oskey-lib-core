@@ -11,7 +11,6 @@ bool psa_sha256_wrapper(uint8_t *hash, const uint8_t *input, size_t input_len)
 	return (status == PSA_SUCCESS && hash_len == 32);
 }
 
-
 bool psa_sha512_wrapper(uint8_t *hash, const uint8_t *input, size_t input_len)
 {
 	psa_status_t status;

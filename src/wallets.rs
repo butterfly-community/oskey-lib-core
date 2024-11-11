@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::crypto::{HMAC, K256};
 use crate::path::{ChildNumber, DerivationPath};
-use crate::utils::ByteBuilder;
+use crate::utils::ByteVec;
 
 #[derive(Clone, PartialEq, Hash, Eq, Debug)]
 pub struct ExtendedPrivKey {
@@ -29,7 +29,7 @@ impl ExtendedPrivKey {
     }
 
     pub fn child(&self, child: ChildNumber) -> Result<ExtendedPrivKey> {
-        let mut bytes = ByteBuilder::<128>::new();
+        let mut bytes = ByteVec::<128>::new();
 
         if child.is_normal() {
             let encoded_point = K256::export_pk_compressed(&self.secret_key)?;
@@ -41,7 +41,7 @@ impl ExtendedPrivKey {
 
         bytes.extend(&child.to_bytes())?;
 
-        let result = HMAC::hmac_sha512(&self.chain_code, &bytes.build())?;
+        let result = HMAC::hmac_sha512(&self.chain_code, &bytes.into_vec())?;
 
         let (tweak, chain_code) = result.split_at(32);
 

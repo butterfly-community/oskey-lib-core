@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use core::str::FromStr;
+use heapless::Vec;
 
 const HARDENED_BIT: u32 = 1 << 31;
 
@@ -48,7 +49,17 @@ impl FromStr for ChildNumber {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct DerivationPath {
-    path: heapless::Vec<ChildNumber, 32>,
+    path: Vec<ChildNumber, 32>,
+}
+
+impl DerivationPath {
+    pub fn as_ref(&self) -> &[ChildNumber] {
+        &self.path
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ChildNumber> {
+        self.path.iter()
+    }
 }
 
 impl FromStr for DerivationPath {
@@ -61,7 +72,7 @@ impl FromStr for DerivationPath {
             return Err(anyhow!("Path must start with 'm'"));
         }
 
-        let mut path_vec = heapless::Vec::new();
+        let mut path_vec = Vec::new();
         for part in parts {
             path_vec
                 .push(part.parse()?)
@@ -70,16 +81,6 @@ impl FromStr for DerivationPath {
 
         Ok(DerivationPath { path: path_vec })
     }
-}
-
-impl DerivationPath {
-	pub fn as_ref(&self) -> &[ChildNumber] {
-		&self.path
-	}
-
-	pub fn iter(&self) -> impl Iterator<Item = &ChildNumber> {
-		self.path.iter()
-	}
 }
 
 #[cfg(test)]
