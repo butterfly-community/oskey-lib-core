@@ -90,11 +90,12 @@ mod tests {
 
     #[test]
     fn test_derivation_path() {
-        let path: DerivationPath = "m/44'/60'/0'/0".parse().unwrap();
+        let path: DerivationPath = "m/44'/60'/0'/0/0".parse().unwrap();
         let expected_path = Vec::from_slice(&[
             ChildNumber(44 | HARDENED_BIT),
             ChildNumber(60 | HARDENED_BIT),
             ChildNumber(0 | HARDENED_BIT),
+            ChildNumber(0),
             ChildNumber(0),
         ])
         .unwrap();
