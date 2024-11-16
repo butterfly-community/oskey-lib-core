@@ -116,7 +116,7 @@ mod test {
     use super::*;
     use alloc::{vec, vec::Vec};
 
-    pub fn get_test_case() -> Vec<[&'static str; 4]> {
+    pub fn get_test_vector() -> Vec<[&'static str; 4]> {
         let test_vectors = vec![
             [
                 "00000000000000000000000000000000",
@@ -270,7 +270,7 @@ mod test {
 
     #[test]
     pub fn test_mnemonic_from_entropy() {
-        let test_vectors = get_test_case();
+        let test_vectors = get_test_vector();
 
         for case in &test_vectors {
             let entropy = hex::decode(case[0]).unwrap();
@@ -281,7 +281,7 @@ mod test {
 
     #[test]
     pub fn test_mnemonic_from_phrase() {
-        let test_vectors = get_test_case();
+        let test_vectors = get_test_vector();
 
         for case in &test_vectors {
             let mnemonic = Mnemonic::from_phrase(case[1]).unwrap();
@@ -291,7 +291,7 @@ mod test {
 
     #[test]
     pub fn test_mnemonic_to_seed() {
-        let test_vectors = get_test_case();
+        let test_vectors = get_test_vector();
 
         for case in &test_vectors {
             let mnemonic = Mnemonic::from_phrase(case[1]).unwrap();

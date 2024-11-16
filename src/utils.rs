@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 
+#[derive(Clone)]
 pub struct ByteVec<const N: usize> {
     inner: heapless::Vec<u8, N>,
 }

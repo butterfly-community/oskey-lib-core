@@ -9,8 +9,9 @@ use hmac::{Hmac, Mac};
 use k256::{elliptic_curve::sec1::ToEncodedPoint, SecretKey};
 #[cfg(feature = "crypto-rs")]
 use pbkdf2::pbkdf2_hmac;
+use ripemd::Ripemd160;
 #[cfg(feature = "crypto-rs")]
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Sha256, Sha512, Digest};
 
 pub struct Hash;
 
@@ -33,6 +34,14 @@ impl Hash {
     pub fn sha256(input: &[u8]) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
         hasher.update(input);
+        Ok(hasher.finalize().into())
+    }
+
+    pub fn hash160(input: &[u8]) -> Result<[u8; 20]> {
+        let sha256_result = Self::sha256(input)?;
+
+        let mut hasher = Ripemd160::new();
+        hasher.update(sha256_result);
         Ok(hasher.finalize().into())
     }
 }

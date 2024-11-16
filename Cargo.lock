@@ -453,6 +453,7 @@ dependencies = [
  "hmac 0.12.1",
  "k256",
  "pbkdf2",
+ "ripemd",
  "serde",
  "sha2 0.10.8",
  "zerocopy",
@@ -559,6 +560,15 @@ checksum = "871ee76a3eee98b0f805e5d1caf26929f4565073c580c053a55f886fc15dea49"
 dependencies = [
  "hmac 0.13.0-pre.4",
  "subtle",
+]
+
+[[package]]
+name = "ripemd"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd124222d17ad93a644ed9d011a40f4fb64aa54275c08cc216524a9ea82fb09f"
+dependencies = [
+ "digest 0.10.7",
 ]
 
 [[package]]
