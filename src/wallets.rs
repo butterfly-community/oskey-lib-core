@@ -7,7 +7,6 @@ use crate::utils::ByteVec;
 
 #[derive(Clone, PartialEq, Hash, Eq, Debug)]
 pub struct ExtendedPrivKey {
-    pub version: [u8; 4],
     pub depth: u8,
     pub parent_fingerprint: [u8; 4],
     pub child_number: ChildNumber,
@@ -22,7 +21,6 @@ impl ExtendedPrivKey {
         let (secret_key, chain_code) = result.split_at(32);
 
         let mut sk = ExtendedPrivKey {
-            version: [0x04, 0x88, 0xAD, 0xE4],
             depth: 0,
             parent_fingerprint: [0; 4],
             child_number: ChildNumber::non_hardened_from_u32(0)?,
@@ -68,7 +66,6 @@ impl ExtendedPrivKey {
         let child_key = K256::add(&self.secret_key, tweak)?;
 
         Ok(ExtendedPrivKey {
-            version: self.version,
             depth: self.depth + 1,
             parent_fingerprint: self.fingerprint()?,
             child_number: child,

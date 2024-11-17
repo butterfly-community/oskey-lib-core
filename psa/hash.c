@@ -20,3 +20,13 @@ bool psa_sha512_wrapper(uint8_t *hash, const uint8_t *input, size_t input_len)
 
 	return (status == PSA_SUCCESS && hash_len == 64);
 }
+
+bool psa_ripemd160_wrapper(uint8_t *hash, const uint8_t *input, size_t input_len)
+{
+    psa_status_t status;
+    size_t hash_len;
+
+    status = psa_hash_compute(PSA_ALG_RIPEMD160, input, input_len, hash, 20, &hash_len);
+
+    return (status == PSA_SUCCESS && hash_len == 20);
+}

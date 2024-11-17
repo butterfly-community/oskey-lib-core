@@ -214,6 +214,9 @@ extern "C" {
     pub fn psa_sha512_wrapper(hash: *mut u8, input: *const u8, input_len: usize) -> bool;
 }
 extern "C" {
+    pub fn psa_ripemd160_wrapper(hash: *mut u8, input: *const u8, input_len: usize) -> bool;
+}
+extern "C" {
     pub fn psa_pbkdf2_hmac_sha512_wrapper(
         password: *const u8,
         password_len: usize,

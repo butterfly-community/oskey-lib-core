@@ -9,9 +9,10 @@ use hmac::{Hmac, Mac};
 use k256::{elliptic_curve::sec1::ToEncodedPoint, SecretKey};
 #[cfg(feature = "crypto-rs")]
 use pbkdf2::pbkdf2_hmac;
+#[cfg(feature = "crypto-rs")]
 use ripemd::Ripemd160;
 #[cfg(feature = "crypto-rs")]
-use sha2::{Sha256, Sha512, Digest};
+use sha2::{Digest, Sha256, Sha512};
 
 pub struct Hash;
 
@@ -37,6 +38,18 @@ impl Hash {
         Ok(hasher.finalize().into())
     }
 
+    #[cfg(feature = "crypto-psa")]
+    pub fn hash160(input: &[u8]) -> Result<[u8; 20]> {
+        let result = Self::sha256(input)?;
+
+        let mut hash = [0u8; 20];
+
+        unsafe { bindings::psa_ripemd160_wrapper(hash.as_mut_ptr(), result.as_ptr(), result.len()) }
+            .then_some(hash)
+            .ok_or_else(|| anyhow!(""))
+    }
+
+    #[cfg(feature = "crypto-rs")]
     pub fn hash160(input: &[u8]) -> Result<[u8; 20]> {
         let sha256_result = Self::sha256(input)?;
 
