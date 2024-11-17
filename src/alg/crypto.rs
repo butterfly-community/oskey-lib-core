@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{anyhow, Ok, Result, bail};
 
 #[cfg(feature = "crypto-psa")]
 use crate::alg::bindings;
@@ -123,6 +123,9 @@ impl HMAC {
 impl K256 {
     #[cfg(feature = "crypto-rs")]
     pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
+        if sk.len() != 32 {
+            bail!("sk len not 32, current {}", sk.len())
+        }
         let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
         let pk = sk.public_key().to_encoded_point(true);
 
@@ -131,6 +134,9 @@ impl K256 {
 
     #[cfg(feature = "crypto-psa")]
     pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
+        if sk.len() != 32 {
+            bail!("sk len not 32, current {}", sk.len())
+        }
         let mut pk = [0u8; 33];
         let status = unsafe { bindings::psa_k256_derive_pk(sk.as_ptr(), pk.as_mut_ptr()) };
         if status == 0 {
@@ -163,5 +169,43 @@ impl K256 {
         } else {
             anyhow::bail!("{}", status)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    extern crate alloc;
+
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn test_k256_invalid_private_keys() {
+        let zero_key = vec![0u8; 32];
+        assert!(K256::export_pk_compressed(&zero_key).is_err());
+
+        let overflow_key =
+            hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
+                .unwrap();
+        assert!(K256::export_pk_compressed(&overflow_key).is_err());
+
+        let n_key = hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
+            .unwrap();
+        assert!(K256::export_pk_compressed(&n_key).is_err());
+
+        let short_key = vec![1u8; 31];
+        assert!(K256::export_pk_compressed(&short_key).is_err());
+
+        let long_key = vec![1u8; 33];
+        assert!(K256::export_pk_compressed(&long_key).is_err());
+    }
+
+    #[test]
+    fn test_k256_valid_private_key() {
+        let valid_key =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+        assert!(K256::export_pk_compressed(&valid_key).is_ok());
     }
 }
