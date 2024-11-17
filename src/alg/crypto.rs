@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_k256_valid_private_key() {
+    fn test_k256_private_key() {
         let valid_key =
             hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap();
