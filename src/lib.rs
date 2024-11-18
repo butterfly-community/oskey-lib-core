@@ -1,9 +1,6 @@
 #![no_std]
 #![allow(dead_code)]
 
-#[cfg(feature = "zephyr-rtos")]
-pub use zephyr_wrapper::zephyr;
-
 pub mod mnemonic;
 
 pub mod path;
