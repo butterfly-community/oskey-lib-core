@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 #[cfg(feature = "zephyr-rtos")]
-pub extern crate zephyr;
+pub use zephyr_wrapper::zephyr;
 
 pub mod mnemonic;
 

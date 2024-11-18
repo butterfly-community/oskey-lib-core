@@ -385,6 +385,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "lib_zephyr_wrapper"
+version = "0.0.1"
+source = "git+https://github.com/butterfly-communtiy/lib-zephyr-wrapper#a65b560a9ddf97527282980d0fc07f3ad7a7a1f7"
+
+[[package]]
 name = "libc"
 version = "0.2.164"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -438,7 +443,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohw-wallets"
+name = "ohw_wallets"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -450,6 +455,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "k256",
+ "lib_zephyr_wrapper",
  "pbkdf2",
  "ripemd",
  "sha2 0.10.8",
