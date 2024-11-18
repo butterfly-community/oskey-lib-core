@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use heapless::String;
 
-use crate::alg::{Hash, HMAC, K256};
+use crate::alg::crypto::{Hash, HMAC, K256};
 use crate::path::{ChildNumber, DerivationPath};
 use crate::utils::ByteVec;
 

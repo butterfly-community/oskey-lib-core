@@ -3,11 +3,12 @@ use bitvec::{field::BitField, order::Msb0, vec::BitVec};
 use core::fmt::Write;
 use heapless::{String, Vec};
 
-use crate::alg::{Hash, PBKDF2, ENGLISH_WORDS};
+use crate::alg::crypto::{Hash, PBKDF2};
+use crate::alg::ENGLISH_WORDS;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mnemonic {
-    words: Vec<&'static str, 24>,
+    pub words: Vec<&'static str, 24>,
 }
 
 impl Mnemonic {

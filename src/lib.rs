@@ -1,12 +1,15 @@
 #![no_std]
 #![allow(dead_code)]
 
-mod mnemonic;
+#[cfg(feature = "zephyr-rtos")]
+pub extern crate zephyr;
 
-mod path;
+pub mod mnemonic;
 
-mod alg;
+pub mod path;
 
-mod wallets;
+pub mod alg;
+
+pub mod wallets;
 
 mod utils;
