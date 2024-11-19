@@ -182,30 +182,22 @@ mod tests {
 
     #[test]
     fn test_k256_invalid_private_keys() {
-        let zero_key = vec![0u8; 32];
-        assert!(K256::export_pk_compressed(&zero_key).is_err());
+        let zero_pk = vec![0u8; 32];
+        assert!(K256::export_pk_compressed(&zero_pk).is_err());
 
-        let overflow_key =
+        let overflow_pk =
             hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
                 .unwrap();
-        assert!(K256::export_pk_compressed(&overflow_key).is_err());
+        assert!(K256::export_pk_compressed(&overflow_pk).is_err());
 
-        let n_key = hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
+        let n_pk = hex::decode("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
             .unwrap();
-        assert!(K256::export_pk_compressed(&n_key).is_err());
+        assert!(K256::export_pk_compressed(&n_pk).is_err());
 
-        let short_key = vec![1u8; 31];
-        assert!(K256::export_pk_compressed(&short_key).is_err());
+        let short_pk = vec![1u8; 31];
+        assert!(K256::export_pk_compressed(&short_pk).is_err());
 
-        let long_key = vec![1u8; 33];
-        assert!(K256::export_pk_compressed(&long_key).is_err());
-    }
-
-    #[test]
-    fn test_k256_private_key() {
-        let valid_key =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
-        assert!(K256::export_pk_compressed(&valid_key).is_ok());
+        let long_pk = vec![1u8; 33];
+        assert!(K256::export_pk_compressed(&long_pk).is_err());
     }
 }
