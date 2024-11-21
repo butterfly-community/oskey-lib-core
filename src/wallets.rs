@@ -1,3 +1,5 @@
+use core::{str, str::FromStr};
+
 use anyhow::{anyhow, Result};
 use heapless::String;
 
@@ -74,7 +76,7 @@ impl ExtendedPrivKey {
         })
     }
 
-    pub fn encode(&self, is_public: bool) -> Result<String<128>> {
+    pub fn encode(&self, is_public: bool) -> Result<String<256>> {
         let mut data = ByteVec::<128>::new();
 
         if is_public {
@@ -105,11 +107,13 @@ impl ExtendedPrivKey {
 
         data.extend(&checksum)?;
 
-        let mut result = String::new();
-        result
-            .push_str(&bs58::encode(&data.into_vec()).into_string())
-            .map_err(|_| anyhow!(""))?;
-        Ok(result)
+        let mut base58 = [0u8; 256];
+
+        let len = bs58::encode(&data.clone().into_vec())
+            .onto(&mut base58[..])
+            .map_err(|e| anyhow!(e))?;
+
+        Ok(String::from_str(str::from_utf8(&base58[..len])?).map_err(|_| anyhow!(""))?)
     }
 }
 

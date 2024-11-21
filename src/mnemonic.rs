@@ -17,7 +17,7 @@ impl Mnemonic {
         let original_bits = Self::words_to_bits(&original_words)?;
 
         let entropy = Self::bits_to_entropy(&original_bits)?;
-        let rebuilt_bits = Self::entropy_with_checksum(&entropy)?;
+        let rebuilt_bits = Self::entropy_to_bits(&entropy)?;
 
         if original_bits != rebuilt_bits {
             bail!("Checksum mismatch")
@@ -29,7 +29,7 @@ impl Mnemonic {
     }
 
     pub fn from_entropy(entropy: &[u8]) -> Result<Self, anyhow::Error> {
-        let full_bits = Self::entropy_with_checksum(entropy)?;
+        let full_bits = Self::entropy_to_bits(entropy)?;
         let mnemonic = Self::bits_to_words(&full_bits)?;
 
         Ok(Self { words: mnemonic })
@@ -42,7 +42,7 @@ impl Mnemonic {
         PBKDF2::hmac_sha512(self.words.join(" ").as_str(), new_salt.as_str(), 2048)
     }
 
-    fn entropy_with_checksum(entropy: &[u8]) -> Result<BitVec<u8, Msb0>> {
+    fn entropy_to_bits(entropy: &[u8]) -> Result<BitVec<u8, Msb0>> {
         let entropy_len = entropy.len() * 8;
 
         if !(128..=256).contains(&entropy_len) || entropy_len % 32 != 0 {

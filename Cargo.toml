@@ -15,11 +15,11 @@ build = []
 
 [dependencies]
 hex = { version = "0.4", default-features = false, features = ['alloc'] }
+bitvec = { version = "1.0", default-features = false, features = ['alloc'] }
 anyhow = { version = "1.0", default-features = false }
 heapless = { version = "0.8", default-features = false }
-bitvec = { version = "1.0", default-features = false, features = ['alloc'] }
 zeroize = { version = "1.8", default-features = false }
-bs58 = { version = "0.5", default-features = false, features = ['alloc'] }
+bs58 = { version = "0.5", default-features = false }
 
 # If not use psa feature
 sha2 = { version = "0.10", default-features = false, optional = true }
@@ -29,7 +29,6 @@ pbkdf2 = { version = "0.12", default-features = false, features = [
 hmac = { version = "0.12", default-features = false, optional = true }
 k256 = { version = "0.14.0-pre.2", default-features = false, features = [
   "ecdsa",
-  "sha256",
 ], optional = true }
 ripemd = { version = "0.1.3", default-features = false, optional = true }
 
