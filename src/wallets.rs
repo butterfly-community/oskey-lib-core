@@ -37,17 +37,6 @@ impl ExtendedPrivKey {
         Ok(sk)
     }
 
-    pub fn fingerprint(&self) -> Result<[u8; 4]> {
-        let pub_key = K256::export_pk_compressed(&self.secret_key)?;
-
-        let hash = Hash::hash160(&pub_key)?;
-
-        let mut fingerprint = [0u8; 4];
-        fingerprint.copy_from_slice(&hash[..4]);
-
-        Ok(fingerprint)
-    }
-
     pub fn child(&self, child: ChildNumber) -> Result<ExtendedPrivKey> {
         let mut bytes = ByteVec::<128>::new();
 
@@ -74,6 +63,17 @@ impl ExtendedPrivKey {
             secret_key: child_key.try_into()?,
             chain_code: chain_code.try_into()?,
         })
+    }
+
+    pub fn fingerprint(&self) -> Result<[u8; 4]> {
+        let pub_key = K256::export_pk_compressed(&self.secret_key)?;
+
+        let hash = Hash::hash160(&pub_key)?;
+
+        let mut fingerprint = [0u8; 4];
+        fingerprint.copy_from_slice(&hash[..4]);
+
+        Ok(fingerprint)
     }
 
     pub fn encode(&self, is_public: bool) -> Result<String<256>> {
