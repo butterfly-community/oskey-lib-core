@@ -248,3 +248,19 @@ extern "C" {
         result: *mut u8,
     ) -> ::core::ffi::c_int;
 }
+extern "C" {
+    pub fn psa_k256_sign_message(
+        private_key: *const u8,
+        message: *const u8,
+        message_length: usize,
+        signature: *mut u8,
+    ) -> i32;
+}
+extern "C" {
+    pub fn psa_k256_verify_message(
+        public_key: *const u8,
+        message: *const u8,
+        message_length: usize,
+        signature: *const u8,
+    ) -> i32;
+}

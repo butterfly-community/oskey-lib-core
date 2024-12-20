@@ -2,8 +2,6 @@
 #include <string.h>
 #include "option.h"
 
-
-
 int32_t psa_k256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *public_key)
 {
 	psa_status_t status = psa_crypto_init();
@@ -26,10 +24,6 @@ int32_t psa_k256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *pub
 
 	status = psa_export_public_key(key_id, public_key, 65, &output_length);
 	psa_destroy_key(key_id);
-
-	if (status != PSA_SUCCESS) {
-		return status;
-	}
 
 	return status;
 }
@@ -89,4 +83,62 @@ int psa_k256_add_num(const uint8_t *num1, const uint8_t *num2, uint8_t *result)
 	mbedtls_mpi_free(&R);
 
 	return ret;
+}
+
+int32_t psa_k256_sign_message(const uint8_t *private_key, const uint8_t *message,
+			      size_t message_length, uint8_t *signature)
+{
+	size_t signature_length;
+	psa_status_t status = psa_crypto_init();
+	if (status != PSA_SUCCESS) {
+		return status;
+	}
+
+	psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t key_id;
+
+	psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_K1));
+	psa_set_key_bits(&attributes, 256);
+	psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+	psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+
+	status = psa_import_key(&attributes, private_key, 32, &key_id);
+	if (status != PSA_SUCCESS) {
+		return status;
+	}
+
+	status = psa_sign_message(key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256), message, message_length,
+				  signature, 64, &signature_length);
+
+	psa_destroy_key(key_id);
+	return status;
+}
+
+int32_t psa_k256_verify_message(const uint8_t *public_key, const uint8_t *message,
+				size_t message_length, const uint8_t *signature)
+{
+	size_t signature_length;
+	psa_status_t status = psa_crypto_init();
+	if (status != PSA_SUCCESS) {
+		return status;
+	}
+
+	psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+	psa_key_id_t key_id;
+
+	psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_K1));
+	psa_set_key_bits(&attributes, 256);
+	psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+	psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_VERIFY_MESSAGE);
+
+	status = psa_import_key(&attributes, public_key, 65, &key_id);
+	if (status != PSA_SUCCESS) {
+		return status;
+	}
+
+	status = psa_verify_message(key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256), message, message_length,
+				    signature, &signature_length);
+
+	psa_destroy_key(key_id);
+	return status;
 }

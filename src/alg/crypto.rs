@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Ok, Result, bail};
+use anyhow::{anyhow, bail, Ok, Result};
 
 #[cfg(feature = "crypto-psa")]
 use crate::alg::bindings;
@@ -6,7 +6,14 @@ use crate::alg::bindings;
 #[cfg(feature = "crypto-rs")]
 use hmac::{Hmac, Mac};
 #[cfg(feature = "crypto-rs")]
-use k256::{elliptic_curve::sec1::ToEncodedPoint, SecretKey};
+use k256::{
+    ecdsa::{
+        signature::{Signer, Verifier},
+        Signature, SigningKey, VerifyingKey,
+    },
+    elliptic_curve::sec1::ToEncodedPoint,
+    SecretKey,
+};
 #[cfg(feature = "crypto-rs")]
 use pbkdf2::pbkdf2_hmac;
 #[cfg(feature = "crypto-rs")]
@@ -158,6 +165,26 @@ impl K256 {
         Ok(new_secret_key.try_into()?)
     }
 
+    #[cfg(feature = "crypto-rs")]
+    pub fn sign(sk: &[u8], data: &[u8]) -> Result<[u8; 64]> {
+        let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
+
+        let signing_key = SigningKey::from(sk);
+
+        let signature: Signature = signing_key.try_sign(data).map_err(|e| anyhow!(e))?;
+
+        Ok(signature.to_bytes().into())
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn verify_sign(pk: &[u8], message: &[u8], signature: &[u8; 64]) -> Result<bool> {
+        let verifying_key = VerifyingKey::from_sec1_bytes(pk).map_err(|e| anyhow!(e))?;
+
+        let signature = Signature::from_bytes(signature.into()).map_err(|e| anyhow!(e))?;
+
+        Ok(verifying_key.verify(message, &signature).is_ok())
+    }
+
     #[cfg(feature = "crypto-psa")]
     pub fn add(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
         let mut result = [0u8; 32];
@@ -166,6 +193,41 @@ impl K256 {
         };
         if status == 0 {
             Ok(result)
+        } else {
+            anyhow::bail!("{}", status)
+        }
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn sign(sk: &[u8], message: &[u8]) -> Result<[u8; 64]> {
+        let mut result = [0u8; 64];
+        let status = unsafe {
+            bindings::psa_k256_sign_message(
+                sk.as_ptr(),
+                message.as_ptr(),
+                message.len(),
+                result.as_mut_ptr(),
+            )
+        };
+        if status == 0 {
+            Ok(result)
+        } else {
+            anyhow::bail!("{}", status)
+        }
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn verify_sign(pk: &[u8], message: &[u8], signature: &[u8; 64]) -> Result<bool> {
+        let status = unsafe {
+            bindings::psa_k256_verify_message(
+                pk.as_ptr(),
+                message.as_ptr(),
+                message.len(),
+                signature.as_ptr(),
+            )
+        };
+        if status == 0 {
+            Ok(true)
         } else {
             anyhow::bail!("{}", status)
         }
