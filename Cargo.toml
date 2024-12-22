@@ -6,7 +6,7 @@ description = ""
 license = ""
 
 [features]
-default = ["build", "crypto-psa"]
+default = ["build", "crypto-rs"]
 # Crypto backend selection (mutually exclusive):
 # Note: enable both 'crypto-psa' and 'build' features to link against host lib.
 crypto-psa = []
