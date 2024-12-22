@@ -117,7 +117,6 @@ int32_t psa_k256_sign_message(const uint8_t *private_key, const uint8_t *message
 int32_t psa_k256_verify_message(const uint8_t *public_key, const uint8_t *message,
 				size_t message_length, const uint8_t *signature)
 {
-	size_t signature_length;
 	psa_status_t status = psa_crypto_init();
 	if (status != PSA_SUCCESS) {
 		return status;
@@ -137,7 +136,7 @@ int32_t psa_k256_verify_message(const uint8_t *public_key, const uint8_t *messag
 	}
 
 	status = psa_verify_message(key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256), message, message_length,
-				    signature, &signature_length);
+				    signature, 64);
 
 	psa_destroy_key(key_id);
 	return status;
