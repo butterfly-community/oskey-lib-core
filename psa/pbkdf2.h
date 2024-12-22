@@ -1,5 +1,5 @@
-#ifndef __PBKDF2_H__
-#define __PBKDF2_H__
+#ifndef PBKDF2_H
+#define PBKDF2_H
 
 #include "option.h"
 

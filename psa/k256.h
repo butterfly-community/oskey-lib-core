@@ -1,5 +1,5 @@
-#ifndef __K256_H__
-#define __K256_H__
+#ifndef K256_H
+#define K256_H
 
 #include "option.h"
 

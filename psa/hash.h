@@ -1,5 +1,5 @@
-#ifndef __HASH_H__
-#define __HASH_H__
+#ifndef HASH_H
+#define HASH_H
 
 #include "option.h"
 

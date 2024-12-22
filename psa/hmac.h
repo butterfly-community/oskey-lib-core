@@ -1,5 +1,5 @@
-#ifndef __HMAC_H__
-#define __HMAC_H__
+#ifndef HMAC_H
+#define HMAC_H
 
 #include "option.h"
 
