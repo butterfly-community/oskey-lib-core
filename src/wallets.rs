@@ -65,6 +65,14 @@ impl ExtendedPrivKey {
         })
     }
 
+    pub fn export_pk(&self) -> Result<[u8; 65]> {
+        Ok(K256::export_pk(&self.secret_key)?)
+    }
+
+    pub fn sign(&self, msg: &[u8]) -> Result<[u8; 64]> {
+        Ok(K256::sign(&self.secret_key, msg)?)
+    }
+
     pub fn fingerprint(&self) -> Result<[u8; 4]> {
         let pub_key = K256::export_pk_compressed(&self.secret_key)?;
 

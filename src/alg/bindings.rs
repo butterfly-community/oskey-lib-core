@@ -249,10 +249,10 @@ extern "C" {
     ) -> ::core::ffi::c_int;
 }
 extern "C" {
-    pub fn psa_k256_sign_message(
+    pub fn psa_k256_sign_hash(
         private_key: *const u8,
-        message: *const u8,
-        message_length: usize,
+        hash: *const u8,
+        hash_length: usize,
         signature: *mut u8,
     ) -> i32;
 }

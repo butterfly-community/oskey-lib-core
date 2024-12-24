@@ -85,8 +85,8 @@ int psa_k256_add_num(const uint8_t *num1, const uint8_t *num2, uint8_t *result)
 	return ret;
 }
 
-int32_t psa_k256_sign_message(const uint8_t *private_key, const uint8_t *message,
-			      size_t message_length, uint8_t *signature)
+int32_t psa_k256_sign_hash(const uint8_t *private_key, const uint8_t *hash,
+			      size_t hash_length, uint8_t *signature)
 {
 	size_t signature_length;
 	psa_status_t status = psa_crypto_init();
@@ -99,15 +99,15 @@ int32_t psa_k256_sign_message(const uint8_t *private_key, const uint8_t *message
 
 	psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_K1));
 	psa_set_key_bits(&attributes, 256);
-	psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
-	psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+	psa_set_key_algorithm(&attributes, PSA_ALG_DETERMINISTIC_ECDSA(PSA_ALG_SHA3_256));
+	psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_HASH);
 
 	status = psa_import_key(&attributes, private_key, 32, &key_id);
 	if (status != PSA_SUCCESS) {
 		return status;
 	}
 
-	status = psa_sign_message(key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256), message, message_length,
+	status = psa_sign_hash(key_id, PSA_ALG_DETERMINISTIC_ECDSA(PSA_ALG_SHA3_256), hash, hash_length,
 				  signature, 64, &signature_length);
 
 	psa_destroy_key(key_id);

@@ -139,6 +139,17 @@ impl K256 {
         Ok(pk.as_bytes().try_into()?)
     }
 
+    #[cfg(feature = "crypto-rs")]
+    pub fn export_pk(sk: &[u8]) -> Result<[u8; 65]> {
+        if sk.len() != 32 {
+            bail!("sk len not 32, current {}", sk.len())
+        }
+        let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
+        let pk = sk.public_key().to_encoded_point(false);
+
+        Ok(pk.as_bytes().try_into()?)
+    }
+
     #[cfg(feature = "crypto-psa")]
     pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
         if sk.len() != 32 {
@@ -153,6 +164,21 @@ impl K256 {
         }
     }
 
+    #[cfg(feature = "crypto-psa")]
+    pub fn export_pk(sk: &[u8]) -> Result<[u8; 65]> {
+        if sk.len() != 32 {
+            bail!("sk len not 32, current {}", sk.len())
+        }
+        let mut pk = [0u8; 65];
+        let status = unsafe { bindings::psa_k256_derive_pk_uncompressed(sk.as_ptr(), pk.as_mut_ptr()) };
+        if status == 0 {
+            Ok(pk)
+        } else {
+            anyhow::bail!("{}", status)
+        }
+    }
+
+
     #[cfg(feature = "crypto-rs")]
     pub fn add(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
         let sk1 = SecretKey::from_slice(num1).map_err(|e| anyhow!(e))?;
@@ -163,26 +189,6 @@ impl K256 {
             .add(&sk2.to_nonzero_scalar())
             .to_bytes();
         Ok(new_secret_key.try_into()?)
-    }
-
-    #[cfg(feature = "crypto-rs")]
-    pub fn sign(sk: &[u8], data: &[u8]) -> Result<[u8; 64]> {
-        let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
-
-        let signing_key = SigningKey::from(sk);
-
-        let signature: Signature = signing_key.try_sign(data).map_err(|e| anyhow!(e))?;
-
-        Ok(signature.to_bytes().into())
-    }
-
-    #[cfg(feature = "crypto-rs")]
-    pub fn verify_sign(pk: &[u8], message: &[u8], signature: &[u8; 64]) -> Result<bool> {
-        let verifying_key = VerifyingKey::from_sec1_bytes(pk).map_err(|e| anyhow!(e))?;
-
-        let signature = Signature::from_bytes(signature.into()).map_err(|e| anyhow!(e))?;
-
-        Ok(verifying_key.verify(message, &signature).is_ok())
     }
 
     #[cfg(feature = "crypto-psa")]
@@ -198,11 +204,23 @@ impl K256 {
         }
     }
 
+    #[cfg(feature = "crypto-rs")]
+    pub fn sign(sk: &[u8], data: &[u8]) -> Result<[u8; 64]> {
+        let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
+
+        let signing_key = SigningKey::from(sk);
+
+        let signature: Signature = signing_key.try_sign(data).map_err(|e| anyhow!(e))?;
+
+        Ok(signature.to_bytes().into())
+    }
+
+
     #[cfg(feature = "crypto-psa")]
     pub fn sign(sk: &[u8], message: &[u8]) -> Result<[u8; 64]> {
         let mut result = [0u8; 64];
         let status = unsafe {
-            bindings::psa_k256_sign_message(
+            bindings::psa_k256_sign_hash(
                 sk.as_ptr(),
                 message.as_ptr(),
                 message.len(),
@@ -214,6 +232,15 @@ impl K256 {
         } else {
             anyhow::bail!("{}", status)
         }
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn verify_sign(pk: &[u8], message: &[u8], signature: &[u8; 64]) -> Result<bool> {
+        let verifying_key = VerifyingKey::from_sec1_bytes(pk).map_err(|e| anyhow!(e))?;
+
+        let signature = Signature::from_bytes(signature.into()).map_err(|e| anyhow!(e))?;
+
+        Ok(verifying_key.verify(message, &signature).is_ok())
     }
 
     #[cfg(feature = "crypto-psa")]
