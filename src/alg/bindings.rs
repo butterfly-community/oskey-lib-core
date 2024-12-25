@@ -235,32 +235,3 @@ extern "C" {
         output: *mut u8,
     ) -> i32;
 }
-extern "C" {
-    pub fn psa_k256_derive_pk(private_key: *const u8, public_key: *mut u8) -> i32;
-}
-extern "C" {
-    pub fn psa_k256_derive_pk_uncompressed(private_key: *const u8, public_key: *mut u8) -> i32;
-}
-extern "C" {
-    pub fn psa_k256_add_num(
-        num1: *const u8,
-        num2: *const u8,
-        result: *mut u8,
-    ) -> ::core::ffi::c_int;
-}
-extern "C" {
-    pub fn psa_k256_sign_hash(
-        private_key: *const u8,
-        hash: *const u8,
-        hash_length: usize,
-        signature: *mut u8,
-    ) -> i32;
-}
-extern "C" {
-    pub fn psa_k256_verify_message(
-        public_key: *const u8,
-        message: *const u8,
-        message_length: usize,
-        signature: *const u8,
-    ) -> i32;
-}
