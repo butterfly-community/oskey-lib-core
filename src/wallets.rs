@@ -69,7 +69,7 @@ impl ExtendedPrivKey {
         Ok(K256::export_pk(&self.secret_key)?)
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Result<[u8; 65]> {
+    pub fn sign(&self, msg: &[u8]) -> Result<[u8; 64]> {
         Ok(K256::sign(&self.secret_key, msg)?)
     }
 
