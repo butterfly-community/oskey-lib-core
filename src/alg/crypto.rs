@@ -6,13 +6,13 @@ use crate::alg::bindings;
 #[cfg(feature = "crypto-rs")]
 use hmac::{Hmac, Mac};
 #[cfg(feature = "crypto-rs")]
+use k256::{ecdsa::SigningKey, elliptic_curve::sec1::ToEncodedPoint, SecretKey};
+#[cfg(feature = "crypto-rs")]
 use pbkdf2::pbkdf2_hmac;
 #[cfg(feature = "crypto-rs")]
 use ripemd::Ripemd160;
 #[cfg(feature = "crypto-rs")]
 use sha2::{Digest, Sha256, Sha512};
-#[cfg(feature = "crypto-rs")]
-use k256::{ecdsa::SigningKey, elliptic_curve::sec1::ToEncodedPoint, SecretKey};
 
 pub struct Hash;
 
@@ -163,7 +163,8 @@ impl K256 {
             bail!("sk len not 32, current {}", sk.len())
         }
         let mut pk = [0u8; 65];
-        let status = unsafe { bindings::psa_k256_derive_pk_uncompressed(sk.as_ptr(), pk.as_mut_ptr()) };
+        let status =
+            unsafe { bindings::psa_k256_derive_pk_uncompressed(sk.as_ptr(), pk.as_mut_ptr()) };
         if status == 0 {
             Ok(pk)
         } else {
@@ -268,12 +269,27 @@ mod tests {
 
         let sk = hex::decode("0bc0bb17546bea74ce589ce21caae32ae3302f1fdda1c370fcb381c8155d536c")
             .unwrap();
-        // recoverable id 1b
+
         let signature = hex::decode("c160e6652a71dfbe54b11663e6d674551687ce6e26217d6f8fceb08057eeb61f54a7b1f666a9cae8a10a0627b78e05205f6845c9097b5decb14a8f00b3d420bb").unwrap();
 
         let result = K256::sign(&sk, &hex).unwrap();
 
         assert_eq!(result, signature.as_slice());
+    }
+
+    #[test]
+    fn test_k256_sign_2() {
+        let hex = hex::decode("c70ddbdd9ded26358c5aac5bc9ebe614549b3e738f6d5886e107842a256964ff")
+            .unwrap();
+
+        let sk = hex::decode("b00f1df487caf066dcd95710618033b4c8d3477b7e027362c1df8d37be324368")
+            .unwrap();
+        // recoverable id 1b
+        let signature = "a6a68027698d3a05e3aa9ad931c2578d23eb29536dbf195f313a09bf8828c8252efcb83aa5583454ff01c88c77d7d08ae839a27aa4ee9839c6ebdee6f49781b3";
+
+        let result = K256::sign(&sk, &hex).unwrap();
+
+        assert_eq!(hex::encode(result), signature);
     }
 
     #[test]

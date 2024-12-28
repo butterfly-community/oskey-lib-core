@@ -43,10 +43,9 @@ int32_t psa_k256_derive_pk(const uint8_t *private_key, uint8_t *public_key)
 }
 
 // K256 curve order
-static const uint8_t k256_n[32] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-0xFF, 				   0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0xBA, 0xAE, 0xDC, 0xE6,
-0xAF, 0x48, 				   0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41,
-0x41};
+static const uint8_t k256_n[32] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+				   0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48,
+				   0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41};
 
 int psa_k256_add_num(const uint8_t *num1, const uint8_t *num2, uint8_t *result)
 {
@@ -86,6 +85,49 @@ int psa_k256_add_num(const uint8_t *num1, const uint8_t *num2, uint8_t *result)
 	return ret;
 }
 
+int psa_normalize_signature(uint8_t *sig)
+{
+	int ret = 0;
+	mbedtls_mpi s, order, half_order;
+	mbedtls_ecp_group grp;
+
+	mbedtls_mpi_init(&s);
+	mbedtls_mpi_init(&order);
+	mbedtls_mpi_init(&half_order);
+	mbedtls_ecp_group_init(&grp);
+
+	if (ret == 0) {
+		ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256K1);
+	}
+	if (ret == 0) {
+		ret = mbedtls_mpi_copy(&order, &grp.N);
+	}
+
+	if (ret == 0) {
+		ret = mbedtls_mpi_copy(&half_order, &order);
+	}
+	if (ret == 0) {
+		ret = mbedtls_mpi_shift_r(&half_order, 1);
+	}
+
+	if (ret == 0) {
+		ret = mbedtls_mpi_read_binary(&s, sig + 32, 32);
+	}
+	if (ret == 0 && mbedtls_mpi_cmp_mpi(&s, &half_order) > 0) {
+		ret = mbedtls_mpi_sub_mpi(&s, &order, &s);
+		if (ret == 0) {
+			ret = mbedtls_mpi_write_binary(&s, sig + 32, 32);
+		}
+	}
+
+	mbedtls_mpi_free(&s);
+	mbedtls_mpi_free(&order);
+	mbedtls_mpi_free(&half_order);
+	mbedtls_ecp_group_free(&grp);
+
+	return ret;
+}
+
 int32_t psa_k256_sign_hash(const uint8_t *private_key, const uint8_t *hash, size_t hash_length,
 			   uint8_t *signature)
 {
@@ -110,7 +152,13 @@ int32_t psa_k256_sign_hash(const uint8_t *private_key, const uint8_t *hash, size
 
 	status = psa_sign_hash(key_id, PSA_ALG_DETERMINISTIC_ECDSA(PSA_ALG_SHA_256), hash,
 			       hash_length, signature, 64, &signature_length);
-
+	if (status != PSA_SUCCESS) {
+		return status;
+	}
+	int ret = psa_normalize_signature(signature);
+	if (ret != 0) {
+		return ret;
+	}
 	psa_destroy_key(key_id);
 	return status;
 }
