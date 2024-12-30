@@ -198,7 +198,7 @@ impl K256 {
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn sign(sk: &[u8], data: &[u8]) -> Result<[u8; 64]> {
+    pub fn sign(sk: &[u8], data: &[u8]) -> Result<[u8; 65]> {
         let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
 
         let signing_key = SigningKey::from(sk);
@@ -207,16 +207,16 @@ impl K256 {
             .sign_prehash_recoverable(data)
             .map_err(|e| anyhow!(e))?;
 
-        // let mut result = [0u8; 65];
-        // result[..64].copy_from_slice(&signature.0.to_bytes());
-        // result[64] = u8::from(signature.1) + 27;
+        let mut result = [0u8; 65];
+        result[..64].copy_from_slice(&signature.0.to_bytes());
+        result[64] = u8::from(signature.1) + 27;
 
-        Ok(signature.0.to_bytes().try_into()?)
+        Ok(result)
     }
 
     #[cfg(feature = "crypto-psa")]
-    pub fn sign(sk: &[u8], message: &[u8]) -> Result<[u8; 64]> {
-        let mut result = [0u8; 64];
+    pub fn sign(sk: &[u8], message: &[u8]) -> Result<[u8; 65]> {
+        let mut result = [0u8; 65];
         let status = unsafe {
             bindings::psa_k256_sign_hash(
                 sk.as_ptr(),
@@ -226,6 +226,7 @@ impl K256 {
             )
         };
         if status == 0 {
+            result[64] = u8::from(result[64]) + 27;
             Ok(result)
         } else {
             anyhow::bail!("{}", status)
@@ -263,29 +264,14 @@ mod tests {
     }
 
     #[test]
-    fn test_k256_sign() {
-        let hex = hex::decode("9b228700b59fa9bc2afd675894051d2016083adaca23ae031f848f609ce25d01")
+    fn test_k256_sign_1() {
+        let hex = hex::decode("780293f5138d6713e369b0faa692d3d61ec66426c9e34461281b7ca75a5aa284")
             .unwrap();
 
-        let sk = hex::decode("0bc0bb17546bea74ce589ce21caae32ae3302f1fdda1c370fcb381c8155d536c")
+        let sk = hex::decode("419a6c35542d94571590434e3e7824d692c9a709d635c9878684c8e4cd2bb080")
             .unwrap();
 
-        let signature = hex::decode("c160e6652a71dfbe54b11663e6d674551687ce6e26217d6f8fceb08057eeb61f54a7b1f666a9cae8a10a0627b78e05205f6845c9097b5decb14a8f00b3d420bb").unwrap();
-
-        let result = K256::sign(&sk, &hex).unwrap();
-
-        assert_eq!(result, signature.as_slice());
-    }
-
-    #[test]
-    fn test_k256_sign_2() {
-        let hex = hex::decode("c70ddbdd9ded26358c5aac5bc9ebe614549b3e738f6d5886e107842a256964ff")
-            .unwrap();
-
-        let sk = hex::decode("b00f1df487caf066dcd95710618033b4c8d3477b7e027362c1df8d37be324368")
-            .unwrap();
-        // recoverable id 1b
-        let signature = "a6a68027698d3a05e3aa9ad931c2578d23eb29536dbf195f313a09bf8828c8252efcb83aa5583454ff01c88c77d7d08ae839a27aa4ee9839c6ebdee6f49781b3";
+        let signature = "5dc3e1169d68315eb56afc659dacbfa024d00e47522ef41a6a044657cc7d66aa7ff3734a8c6e587559d267aa0330f0d97966f95350caa64e41403b633b1822ad1c";
 
         let result = K256::sign(&sk, &hex).unwrap();
 
