@@ -3,7 +3,7 @@ use core::{str, str::FromStr};
 use anyhow::{anyhow, Result};
 use heapless::String;
 
-use crate::alg::crypto::{Hash, HMAC, K256};
+use crate::alg::crypto::{Hash, K256Signature, HMAC, K256};
 use crate::path::{ChildNumber, DerivationPath};
 use crate::utils::ByteVec;
 
@@ -69,7 +69,7 @@ impl ExtendedPrivKey {
         Ok(K256::export_pk(&self.secret_key)?)
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Result<[u8; 65]> {
+    pub fn sign(&self, msg: &[u8]) -> Result<K256Signature> {
         Ok(K256::sign(&self.secret_key, msg)?)
     }
 

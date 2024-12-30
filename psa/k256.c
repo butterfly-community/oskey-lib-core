@@ -85,7 +85,7 @@ int psa_k256_add_num(const uint8_t *num1, const uint8_t *num2, uint8_t *result)
 	return ret;
 }
 
-int psa_normalize_signature(uint8_t *sig, uint8_t *normalized)
+int psa_normalize_signature(uint8_t *sig)
 {
 	int ret = 0;
 	mbedtls_mpi s, order, half_order;
@@ -96,7 +96,9 @@ int psa_normalize_signature(uint8_t *sig, uint8_t *normalized)
 	mbedtls_mpi_init(&half_order);
 	mbedtls_ecp_group_init(&grp);
 
-	*normalized = 1;
+	if (ret == 0) {
+		ret = mbedtls_mpi_read_binary(&s, sig + 32, 32);
+	}
 
 	if (ret == 0) {
 		ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256K1);
@@ -119,7 +121,6 @@ int psa_normalize_signature(uint8_t *sig, uint8_t *normalized)
 		ret = mbedtls_mpi_sub_mpi(&s, &order, &s);
 		if (ret == 0) {
 			ret = mbedtls_mpi_write_binary(&s, sig + 32, 32);
-			*normalized = 0;
 		}
 	}
 
@@ -127,6 +128,7 @@ int psa_normalize_signature(uint8_t *sig, uint8_t *normalized)
 	mbedtls_mpi_free(&order);
 	mbedtls_mpi_free(&half_order);
 	mbedtls_ecp_group_free(&grp);
+
 
 	return ret;
 }
@@ -159,9 +161,8 @@ int32_t psa_k256_sign_hash(const uint8_t *private_key, const uint8_t *hash, size
 		return status;
 	}
 
-	uint8_t normalized;
-	int ret = psa_normalize_signature(signature, &normalized);
-	signature[64] = normalized;
+	int ret = psa_normalize_signature(signature);
+
 	if (ret != 0) {
 		return ret;
 	}
