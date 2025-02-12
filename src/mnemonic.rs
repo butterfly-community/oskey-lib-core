@@ -74,15 +74,7 @@ impl Mnemonic {
         let total_bits = bits.len();
 
         for word_idx in (0..total_bits).step_by(11) {
-            let mut index = 0u16;
-            for bit_pos in 0..11 {
-                if word_idx + bit_pos >= total_bits {
-                    break;
-                }
-                if bits[word_idx + bit_pos] {
-                    index |= 1 << (10 - bit_pos);
-                }
-            }
+            let index = Self::load_bits_be(bits, word_idx, 11);
             words
                 .push(ENGLISH_WORDS[index as usize])
                 .map_err(|e| anyhow!(e))?;
@@ -118,21 +110,26 @@ impl Mnemonic {
         let mut entropy_bytes = Vec::new();
 
         for byte_idx in (0..entropy_len).step_by(8) {
-            let mut byte = 0u8;
-            for bit_pos in 0..8 {
-                if byte_idx + bit_pos >= entropy_len {
-                    break;
-                }
-                if full_bits[byte_idx + bit_pos] {
-                    byte |= 1 << (7 - bit_pos);
-                }
-            }
+            let byte = Self::load_bits_be(full_bits, byte_idx, 8) as u8;
             entropy_bytes
                 .push(byte)
                 .map_err(|_| anyhow!("Entropy conversion failed"))?;
         }
 
         Ok(entropy_bytes)
+    }
+
+    fn load_bits_be(bits: &BitVec, start: usize, bit_count: usize) -> u16 {
+        let mut value = 0u16;
+        for i in 0..bit_count {
+            if start + i >= bits.len() {
+                break;
+            }
+            if bits[start + i] {
+                value |= 1 << (bit_count - 1 - i);
+            }
+        }
+        value
     }
 }
 
