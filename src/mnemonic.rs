@@ -1,10 +1,10 @@
 use anyhow::{anyhow, bail, Result};
-use bitvec::{field::BitField, order::Msb0, vec::BitVec};
+use bit_vec::BitVec;
 use core::fmt::Write;
 use heapless::{String, Vec};
 
 use crate::alg::crypto::{Hash, PBKDF2};
-use crate::alg::ENGLISH_WORDS;
+use crate::alg::word_list::ENGLISH_WORDS;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mnemonic {
@@ -42,7 +42,7 @@ impl Mnemonic {
         PBKDF2::hmac_sha512(self.words.join(" ").as_str(), new_salt.as_str(), 2048)
     }
 
-    fn entropy_to_bits(entropy: &[u8]) -> Result<BitVec<u8, Msb0>> {
+    fn entropy_to_bits(entropy: &[u8]) -> Result<BitVec> {
         let entropy_len = entropy.len() * 8;
 
         if !(128..=256).contains(&entropy_len) || entropy_len % 32 != 0 {
@@ -52,35 +52,52 @@ impl Mnemonic {
         let entropy_len = entropy.len() * 8;
         let checksum_len = entropy_len / 32;
 
-        let mut full_bits = BitVec::new();
-        full_bits.extend_from_raw_slice(entropy);
+        let mut full_bits = BitVec::with_capacity(entropy_len + checksum_len);
+
+        for byte in entropy {
+            for i in (0..8).rev() {
+                full_bits.push((byte & (1 << i)) != 0);
+            }
+        }
 
         let hash = Hash::sha256(entropy)?;
-        full_bits.extend_from_raw_slice(&hash[..1]);
-        full_bits.truncate(entropy_len + checksum_len);
+        let checksum_byte = hash[0];
+        for i in 0..checksum_len {
+            full_bits.push((checksum_byte & (1 << (7 - i))) != 0);
+        }
 
         Ok(full_bits)
     }
 
-    fn bits_to_words(bits: &BitVec<u8, Msb0>) -> Result<Vec<&'static str, 24>> {
+    fn bits_to_words(bits: &BitVec) -> Result<Vec<&'static str, 24>> {
         let mut words = Vec::new();
+        let total_bits = bits.len();
 
-        for index_bits in bits.chunks(11) {
-            let index = index_bits.load_be::<u16>() as usize;
-            words.push(ENGLISH_WORDS[index]).map_err(|e| anyhow!(e))?;
+        for word_idx in (0..total_bits).step_by(11) {
+            let mut index = 0u16;
+            for bit_pos in 0..11 {
+                if word_idx + bit_pos >= total_bits {
+                    break;
+                }
+                if bits[word_idx + bit_pos] {
+                    index |= 1 << (10 - bit_pos);
+                }
+            }
+            words
+                .push(ENGLISH_WORDS[index as usize])
+                .map_err(|e| anyhow!(e))?;
         }
 
         Ok(words)
     }
 
-    fn words_to_bits(words: &[&str]) -> Result<BitVec<u8, Msb0>> {
+    fn words_to_bits(words: &[&str]) -> Result<BitVec> {
         let word_count = words.len();
 
         if !(12..=24).contains(&word_count) || word_count % 3 != 0 {
             bail!("Invalid entropy length")
         }
-
-        let mut bits: BitVec<u8, Msb0> = BitVec::new();
+        let mut bits = BitVec::with_capacity(word_count * 11);
 
         for word in words.iter() {
             let idx = ENGLISH_WORDS
@@ -96,13 +113,22 @@ impl Mnemonic {
         Ok(bits)
     }
 
-    fn bits_to_entropy(full_bits: &BitVec<u8, Msb0>) -> Result<Vec<u8, 32>> {
+    fn bits_to_entropy(full_bits: &BitVec) -> Result<Vec<u8, 32>> {
         let entropy_len = full_bits.len() * 32 / 33;
         let mut entropy_bytes = Vec::new();
 
-        for chunk in full_bits[..entropy_len].chunks(8) {
+        for byte_idx in (0..entropy_len).step_by(8) {
+            let mut byte = 0u8;
+            for bit_pos in 0..8 {
+                if byte_idx + bit_pos >= entropy_len {
+                    break;
+                }
+                if full_bits[byte_idx + bit_pos] {
+                    byte |= 1 << (7 - bit_pos);
+                }
+            }
             entropy_bytes
-                .push(chunk.load_be())
+                .push(byte)
                 .map_err(|_| anyhow!("Entropy conversion failed"))?;
         }
 
