@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Ok, Result};
-
+use heapless::Vec;
 #[cfg(feature = "crypto-psa")]
 use crate::alg::bindings;
 
@@ -17,13 +17,24 @@ use ripemd::Ripemd160;
 use sha2::{Digest, Sha256, Sha512};
 #[cfg(feature = "crypto-rs")]
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
-
+#[cfg(feature = "crypto-rs")]
+use p256::{
+    ecdsa::{
+        signature::Signer as P256Signer,
+        signature::Verifier as P256Verifier,
+        Signature as P256Signature,
+        SigningKey as P256SigningKey,
+        VerifyingKey as P256VerifyingKey,
+    },
+    SecretKey as P256SecretKey,
+};
 pub struct Hash;
 pub struct PBKDF2;
 pub struct HMAC;
 pub struct K256;
 pub struct Ed25519;
 pub struct X25519;
+pub struct Nist256p1;
 
 #[derive(Debug, Clone)]
 pub struct K256Signature {
@@ -31,6 +42,12 @@ pub struct K256Signature {
     pub pre_hash: [u8; 32],
     pub signature: [u8; 64],
     pub recovery_id: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Nist256p1Signature {
+    pub public_key: [u8; 65],
+    pub signature: Vec<u8, 72>, // DER 
 }
 
 impl Hash {
@@ -247,7 +264,7 @@ impl Ed25519 {
     pub fn tweak_key(secret: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
         if secret.len() != 32 || tweak.len() != 32 {
             bail!(
-                "Invalid key or tweak length，secret: {}, tweak: {}",
+                "error，secret: {}, tweak: {}",
                 secret.len(),
                 tweak.len()
             );
@@ -273,7 +290,7 @@ impl Ed25519 {
     #[cfg(feature = "crypto-rs")]
     pub fn sign(secret: &[u8], msg: &[u8]) -> Result<[u8; 64]> {
         if secret.len() != 32 {
-            bail!("Invalid private key length: {}", secret.len());
+            bail!("lenth error: {}", secret.len());
         }
         let secret_key = EdSigningKey::from_bytes(secret.try_into()?);
         let signature: Signature = secret_key.sign(msg);
@@ -310,7 +327,7 @@ impl X25519 {
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn export_pk(secret: &[u8]) -> Result<[u8; 32]> {
+    pub fn export_pk(secret: &[u8]) -> Result<[u8; 33]> {
         if secret.len() != 32 {
             return Err(anyhow!(
                 "Invalid secret length: expected 32, got {}",
@@ -318,20 +335,95 @@ impl X25519 {
             ));
         }
 
-        // clamping
         let mut secret_key = [0u8; 32];
         secret_key.copy_from_slice(secret);
 
-        // X25519  clamping
-        secret_key[0] &= 248; // clear bits 0,1,2
-        secret_key[31] &= 127; // clear bit 255
-        secret_key[31] |= 64; // set bit 254
+        // X25519 clamping
+        secret_key[0] &= 248;
+        secret_key[31] &= 127;
+        secret_key[31] |= 64;
 
-        
         let x25519_secret = X25519Secret::from(secret_key);
         let public_key = X25519PublicKey::from(&x25519_secret);
 
-        Ok(public_key.to_bytes())
+        let mut out = [0u8; 33];
+        out[0] = 0x00;
+        out[1..].copy_from_slice(&public_key.to_bytes());
+        Ok(out)
+    }
+}
+
+impl Nist256p1 {
+    #[cfg(feature = "crypto-rs")]
+    pub fn add(sk: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
+        use p256::elliptic_curve::ff::PrimeField;
+        use p256::elliptic_curve::Field;
+        use p256::FieldBytes;
+
+        if sk.len() != 32 || tweak.len() != 32 {
+            bail!("sk or tweak length != 32");
+        }
+
+        let sk_scalar = Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(sk)))
+            .ok_or_else(|| anyhow!("invalid sk scalar"))?;
+        let tweak_scalar = Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(tweak)))
+            .ok_or_else(|| anyhow!("invalid tweak scalar"))?;
+
+        let sum = sk_scalar + tweak_scalar;
+        if sum.is_zero().into() {
+            bail!("derived zero key");
+        }
+
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&sum.to_repr());
+        Ok(out)
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
+        if sk.len() != 32 {
+            bail!("sk len not 32, current {}", sk.len())
+        }
+        let sk = P256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
+        let pk = sk.public_key().to_encoded_point(true);
+        Ok(pk.as_bytes().try_into()?)
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn export_pk(sk: &[u8]) -> Result<[u8; 33]> {
+        if sk.len() != 32 {
+            bail!("sk len not 32, current {}", sk.len())
+        }
+        let sk = P256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
+        let pk = sk.public_key().to_encoded_point(true); // true = compressed
+        Ok(pk.as_bytes().try_into()?)
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn sign(secret: &[u8], msg: &[u8]) -> Result<Nist256p1Signature> {
+        if secret.len() != 32 {
+            bail!("secret key length not 32");
+        }
+
+        let signing_key = P256SigningKey::from_bytes(secret.into()).map_err(|e| anyhow!(e))?;
+        let verifying_key = signing_key.verifying_key();
+        let sig: P256Signature = P256Signer::sign(&signing_key, msg);
+
+        let pk = verifying_key.to_encoded_point(false);
+        let mut out_sig = Vec::<u8, 72>::new();
+        let _ = out_sig.extend_from_slice(&sig.to_vec());
+
+        Ok(Nist256p1Signature {
+            public_key: pk.as_bytes().try_into()?,
+            signature: out_sig,
+        })
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn verify(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool> {
+        let verifying_key = P256VerifyingKey::from_sec1_bytes(pk).map_err(|e| anyhow!(e))?;
+        let sig = P256Signature::from_der(sig).map_err(|e| anyhow!(e))?;
+        Ok(P256Verifier::verify(&verifying_key, msg, &sig).is_ok())
     }
 }
 
@@ -442,9 +534,8 @@ mod tests {
             .unwrap();
         let pk = X25519::export_pk(&sk).unwrap();
 
-        // 用实际生成的公钥作为期望值
         let expected_pk =
-            hex::decode("bcb1a123e0742b56b07e0b06c8106bef137131ace91585f0eee4949447661c15")
+            hex::decode("00bcb1a123e0742b56b07e0b06c8106bef137131ace91585f0eee4949447661c15")
                 .unwrap();
 
         assert_eq!(pk.as_slice(), expected_pk.as_slice());
