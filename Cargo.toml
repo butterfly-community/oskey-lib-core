@@ -9,7 +9,7 @@ license = ""
 default = ["build", "crypto-rs"]
 # Crypto backend selection (mutually exclusive):
 # Note: enable both 'crypto-psa' and 'build' features to link against host lib.
-crypto-psa = []
+crypto-psa = ["dep:ed25519-dalek", "dep:x25519-dalek", "dep:curve25519-dalek", "dep:p256"]
 crypto-rs = ["dep:sha2", "dep:pbkdf2", "dep:hmac", "dep:ripemd", "dep:k256", "dep:ed25519-dalek", "dep:x25519-dalek", "dep:curve25519-dalek", "dep:p256"]
 build = []
 

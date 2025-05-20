@@ -17,6 +17,7 @@ fn main() {
         "cargo:rustc-link-search=native={}",
         "/home/linuxbrew/.linuxbrew/lib"
     );
+    println!("cargo:rustc-link-search=native=/usr/local/lib/");
     println!("cargo:rustc-link-lib=static=crypto");
     println!("cargo:rustc-link-lib=static=mbedtls");
     println!("cargo:rustc-link-lib=static=mbedcrypto");

@@ -1,33 +1,30 @@
-use anyhow::{anyhow, bail, Ok, Result};
-use heapless::Vec;
 #[cfg(feature = "crypto-psa")]
 use crate::alg::bindings;
+use anyhow::{anyhow, bail, Ok, Result};
+use heapless::Vec;
 
-#[cfg(feature = "crypto-rs")]
+#[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
 use ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey};
 #[cfg(feature = "crypto-rs")]
 use hmac::{Hmac, Mac};
 #[cfg(feature = "crypto-rs")]
 use k256::{ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToEncodedPoint, SecretKey};
+#[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
+use p256::{
+    ecdsa::{
+        signature::Signer as P256Signer, signature::Verifier as P256Verifier,
+        Signature as P256Signature, SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey,
+    },
+    SecretKey as P256SecretKey,
+};
 #[cfg(feature = "crypto-rs")]
 use pbkdf2::pbkdf2_hmac;
 #[cfg(feature = "crypto-rs")]
 use ripemd::Ripemd160;
 #[cfg(feature = "crypto-rs")]
 use sha2::{Digest, Sha256, Sha512};
-#[cfg(feature = "crypto-rs")]
+#[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
-#[cfg(feature = "crypto-rs")]
-use p256::{
-    ecdsa::{
-        signature::Signer as P256Signer,
-        signature::Verifier as P256Verifier,
-        Signature as P256Signature,
-        SigningKey as P256SigningKey,
-        VerifyingKey as P256VerifyingKey,
-    },
-    SecretKey as P256SecretKey,
-};
 pub struct Hash;
 pub struct PBKDF2;
 pub struct HMAC;
@@ -47,7 +44,7 @@ pub struct K256Signature {
 #[derive(Debug, Clone)]
 pub struct Nist256p1Signature {
     pub public_key: [u8; 65],
-    pub signature: Vec<u8, 72>, // DER 
+    pub signature: Vec<u8, 72>, // DER
 }
 
 impl Hash {
@@ -260,14 +257,10 @@ impl K256 {
 }
 
 impl Ed25519 {
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn tweak_key(secret: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
         if secret.len() != 32 || tweak.len() != 32 {
-            bail!(
-                "error，secret: {}, tweak: {}",
-                secret.len(),
-                tweak.len()
-            );
+            bail!("error，secret: {}, tweak: {}", secret.len(), tweak.len());
         }
         let mut child_secret = [0u8; 32];
         child_secret.copy_from_slice(secret);
@@ -277,7 +270,7 @@ impl Ed25519 {
         Ok(child_secret)
     }
 
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn export_pk(sk: &[u8; 32]) -> Result<[u8; 33]> {
         use ed25519_dalek::SigningKey;
         let signing_key = SigningKey::from_bytes(sk);
@@ -287,7 +280,7 @@ impl Ed25519 {
         out[1..].copy_from_slice(verifying_key.as_bytes());
         Ok(out)
     }
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn sign(secret: &[u8], msg: &[u8]) -> Result<[u8; 64]> {
         if secret.len() != 32 {
             bail!("lenth error: {}", secret.len());
@@ -299,7 +292,7 @@ impl Ed25519 {
 }
 
 impl X25519 {
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn tweak_key(secret: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
         use curve25519_dalek::scalar::Scalar;
 
@@ -326,7 +319,7 @@ impl X25519 {
         Ok(bytes)
     }
 
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn export_pk(secret: &[u8]) -> Result<[u8; 33]> {
         if secret.len() != 32 {
             return Err(anyhow!(
@@ -354,7 +347,7 @@ impl X25519 {
 }
 
 impl Nist256p1 {
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn add(sk: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
         use p256::elliptic_curve::ff::PrimeField;
         use p256::elliptic_curve::Field;
@@ -364,10 +357,12 @@ impl Nist256p1 {
             bail!("sk or tweak length != 32");
         }
 
-        let sk_scalar = Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(sk)))
-            .ok_or_else(|| anyhow!("invalid sk scalar"))?;
-        let tweak_scalar = Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(tweak)))
-            .ok_or_else(|| anyhow!("invalid tweak scalar"))?;
+        let sk_scalar =
+            Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(sk)))
+                .ok_or_else(|| anyhow!("invalid sk scalar"))?;
+        let tweak_scalar =
+            Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(tweak)))
+                .ok_or_else(|| anyhow!("invalid tweak scalar"))?;
 
         let sum = sk_scalar + tweak_scalar;
         if sum.is_zero().into() {
@@ -379,8 +374,9 @@ impl Nist256p1 {
         Ok(out)
     }
 
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
         if sk.len() != 32 {
             bail!("sk len not 32, current {}", sk.len())
         }
@@ -389,8 +385,9 @@ impl Nist256p1 {
         Ok(pk.as_bytes().try_into()?)
     }
 
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn export_pk(sk: &[u8]) -> Result<[u8; 33]> {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
         if sk.len() != 32 {
             bail!("sk len not 32, current {}", sk.len())
         }
@@ -399,7 +396,7 @@ impl Nist256p1 {
         Ok(pk.as_bytes().try_into()?)
     }
 
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn sign(secret: &[u8], msg: &[u8]) -> Result<Nist256p1Signature> {
         if secret.len() != 32 {
             bail!("secret key length not 32");
@@ -419,7 +416,7 @@ impl Nist256p1 {
         })
     }
 
-    #[cfg(feature = "crypto-rs")]
+    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn verify(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool> {
         let verifying_key = P256VerifyingKey::from_sec1_bytes(pk).map_err(|e| anyhow!(e))?;
         let sig = P256Signature::from_der(sig).map_err(|e| anyhow!(e))?;
