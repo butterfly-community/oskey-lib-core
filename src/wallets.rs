@@ -3,10 +3,9 @@ use core::{str, str::FromStr};
 use anyhow::{anyhow, Result};
 use heapless::{String, Vec};
 
-use crate::alg::crypto::{Ed25519, Hash, HMAC, K256, X25519, Nist256p1};
+use crate::alg::crypto::{Ed25519, Hash, Nist256p1, HMAC, K256, X25519};
 use crate::path::{ChildNumber, DerivationPath};
 use crate::utils::ByteVec;
-
 
 #[derive(Clone, PartialEq, Hash, Eq, Debug, Copy)]
 pub enum Curve {
@@ -25,7 +24,7 @@ impl Curve {
             Curve::Nist256p1 => b"Nist256p1 seed",
         }
     }
-     fn version_bytes(&self, is_public: bool) -> [u8; 4] {
+    fn version_bytes(&self, is_public: bool) -> [u8; 4] {
         match (self, is_public) {
             (Curve::Secp256k1, false) => [0x04, 0x88, 0xAD, 0xE4], // xprv
             (Curve::Secp256k1, true) => [0x04, 0x88, 0xB2, 0x1E],  // xpub
@@ -33,8 +32,8 @@ impl Curve {
             (Curve::Ed25519, true) => [0x2c, 0x00, 0x00, 0x00],
             (Curve::X25519, false) => [0x2d, 0x00, 0x00, 0x00],
             (Curve::X25519, true) => [0x2e, 0x00, 0x00, 0x00],
-            (Curve::Nist256p1, false) => [0x2f, 0x00, 0x00, 0x00], 
-            (Curve::Nist256p1, true) => [0x30, 0x00, 0x00, 0x00],  
+            (Curve::Nist256p1, false) => [0x2f, 0x00, 0x00, 0x00],
+            (Curve::Nist256p1, true) => [0x30, 0x00, 0x00, 0x00],
         }
     }
 
@@ -76,7 +75,6 @@ impl ExtendedPrivKey {
                 (sk.try_into().unwrap(), cc.try_into().unwrap())
             }
         };
-
 
         let mut sk = ExtendedPrivKey {
             curve,
@@ -572,83 +570,95 @@ mod test {
             "088491f5b4dfafbe956de471f3db10e02d784bc76050ee3b7c3f11b9706d3730",
             "0060cc3b40567729af08757e1efe62536dc864a57ec582f98b96f484201a260c7a",
         ]).unwrap();
-            test_vectors.push([
+        test_vectors.push([
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
             "m/0'",
             "8e73218a1ba5c7b95e94b6e7cf7b37fb6240fb3b2ecd801402a4439da7067ee2",
             "007992b3f270ef15f266785fffb73246ad7f40d1fe8679b737fed0970d92cc5f39",
         ]).unwrap();
-            test_vectors.push([
+        test_vectors.push([
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
             "m/0'/2147483647'",
             "29262b215c961bae20274588b33955c36f265c1f626df9feebb51034ce63c19d",
             "002372feac417c38b833e1aba75f2420278122d698605b995cafc2fed7bb453d41",
         ]).unwrap();
-            test_vectors.push([
+        test_vectors.push([
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
             "m/0'/2147483647'/1'",
             "a4d2474bd98c5e9ff416f536697b89949627d6d2c384b81a86d29f1136f4c2d1",
             "00eca4fd0458d3f729b6218eda871b350fa8870a744caf6d30cd84dad2b9dd9c2d",
         ]).unwrap();
-            test_vectors.push([
+        test_vectors.push([
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
             "m/0'/2147483647'/1'/2147483646'",
             "d3500d9b30529c51d92497eded1d68d29f60c630c45c61a481c185e574c6e5cf",
             "00edaa3d381a2b02f40a80d69b2ce7ba7c3c4a9421744808857cd48c50d29b5868",
         ]).unwrap();
-            test_vectors.push([
+        test_vectors.push([
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
             "m/0'/2147483647'/1'/2147483646'/2'",
             "e20fecd59312b63b37eee27714465aae1caa1c87840abd0d685ea88b3d598fdf",
             "00aa705de68066e9534a238af35ea77c48016462a8aff358d22eaa6c7d5b034354",
         ]).unwrap();
-            test_vectors
-        }
+        test_vectors
+    }
 
     pub fn get_test_vector_nist256p1() -> Vec<[&'static str; 4], 16> {
         let mut test_vectors = Vec::new();
 
-        test_vectors.push([
-            "000102030405060708090a0b0c0d0e0f",
-            "m",
-            "612091aaa12e22dd2abef664f8a01a82cae99ad7441b7ef8110424915c268bc2",
-            "0266874dc6ade47b3ecd096745ca09bcd29638dd52c2c12117b11ed3e458cfa9e8",
-        ]).unwrap();
+        test_vectors
+            .push([
+                "000102030405060708090a0b0c0d0e0f",
+                "m",
+                "612091aaa12e22dd2abef664f8a01a82cae99ad7441b7ef8110424915c268bc2",
+                "0266874dc6ade47b3ecd096745ca09bcd29638dd52c2c12117b11ed3e458cfa9e8",
+            ])
+            .unwrap();
 
-        test_vectors.push([
-            "000102030405060708090a0b0c0d0e0f",
-            "m/0'",
-            "6939694369114c67917a182c59ddb8cafc3004e63ca5d3b84403ba8613debc0c",
-            "0384610f5ecffe8fda089363a41f56a5c7ffc1d81b59a612d0d649b2d22355590c",
-        ]).unwrap();
+        test_vectors
+            .push([
+                "000102030405060708090a0b0c0d0e0f",
+                "m/0'",
+                "6939694369114c67917a182c59ddb8cafc3004e63ca5d3b84403ba8613debc0c",
+                "0384610f5ecffe8fda089363a41f56a5c7ffc1d81b59a612d0d649b2d22355590c",
+            ])
+            .unwrap();
 
-        test_vectors.push([
-            "000102030405060708090a0b0c0d0e0f",
-            "m/0'/1",
-            "284e9d38d07d21e4e281b645089a94f4cf5a5a81369acf151a1c3a57f18b2129",
-            "03526c63f8d0b4bbbf9c80df553fe66742df4676b241dabefdef67733e070f6844",
-        ]).unwrap();
+        test_vectors
+            .push([
+                "000102030405060708090a0b0c0d0e0f",
+                "m/0'/1",
+                "284e9d38d07d21e4e281b645089a94f4cf5a5a81369acf151a1c3a57f18b2129",
+                "03526c63f8d0b4bbbf9c80df553fe66742df4676b241dabefdef67733e070f6844",
+            ])
+            .unwrap();
 
-        test_vectors.push([
-            "000102030405060708090a0b0c0d0e0f",
-            "m/0'/1/2'",
-            "694596e8a54f252c960eb771a3c41e7e32496d03b954aeb90f61635b8e092aa7",
-            "0359cf160040778a4b14c5f4d7b76e327ccc8c4a6086dd9451b7482b5a4972dda0",
-        ]).unwrap();
+        test_vectors
+            .push([
+                "000102030405060708090a0b0c0d0e0f",
+                "m/0'/1/2'",
+                "694596e8a54f252c960eb771a3c41e7e32496d03b954aeb90f61635b8e092aa7",
+                "0359cf160040778a4b14c5f4d7b76e327ccc8c4a6086dd9451b7482b5a4972dda0",
+            ])
+            .unwrap();
 
-        test_vectors.push([
-            "000102030405060708090a0b0c0d0e0f",
-            "m/0'/1/2'/2",
-            "5996c37fd3dd2679039b23ed6f70b506c6b56b3cb5e424681fb0fa64caf82aaa",
-            "029f871f4cb9e1c97f9f4de9ccd0d4a2f2a171110c61178f84430062230833ff20",
-        ]).unwrap();
+        test_vectors
+            .push([
+                "000102030405060708090a0b0c0d0e0f",
+                "m/0'/1/2'/2",
+                "5996c37fd3dd2679039b23ed6f70b506c6b56b3cb5e424681fb0fa64caf82aaa",
+                "029f871f4cb9e1c97f9f4de9ccd0d4a2f2a171110c61178f84430062230833ff20",
+            ])
+            .unwrap();
 
-        test_vectors.push([
-            "000102030405060708090a0b0c0d0e0f",
-            "m/0'/1/2'/2/1000000000",
-            "21c4f269ef0a5fd1badf47eeacebeeaa3de22eb8e5b0adcd0f27dd99d34d0119",
-            "02216cd26d31147f72427a453c443ed2cde8a1e53c9cc44e5ddf739725413fe3f4",
-        ]).unwrap();
+        test_vectors
+            .push([
+                "000102030405060708090a0b0c0d0e0f",
+                "m/0'/1/2'/2/1000000000",
+                "21c4f269ef0a5fd1badf47eeacebeeaa3de22eb8e5b0adcd0f27dd99d34d0119",
+                "02216cd26d31147f72427a453c443ed2cde8a1e53c9cc44e5ddf739725413fe3f4",
+            ])
+            .unwrap();
 
         test_vectors.push([
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
@@ -693,7 +703,7 @@ mod test {
         ]).unwrap();
 
         test_vectors
-}
+    }
 
     fn run_test_vector(test_vectors: Vec<[&'static str; 4], 16>, curve: Curve) -> Result<()> {
         for case in &test_vectors {
