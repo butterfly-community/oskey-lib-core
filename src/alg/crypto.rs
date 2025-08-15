@@ -31,10 +31,10 @@ pub struct HMAC;
 pub struct K256;
 pub struct Ed25519;
 pub struct X25519;
-pub struct Nist256p1;
+pub struct P256;
 
 #[derive(Debug, Clone)]
-pub struct K256Signature {
+pub struct K256AppSignature {
     pub public_key: [u8; 65],
     pub pre_hash: [u8; 32],
     pub signature: [u8; 64],
@@ -42,7 +42,7 @@ pub struct K256Signature {
 }
 
 #[derive(Debug, Clone)]
-pub struct Nist256p1Signature {
+pub struct P256AppSignature {
     pub public_key: [u8; 65],
     pub signature: Vec<u8, 72>, // DER
 }
@@ -218,13 +218,13 @@ impl K256 {
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256Signature> {
+    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256AppSignature> {
         let sk = SecretKey::from_slice(sk_bytes).map_err(|e| anyhow!(e))?;
         let signing_key = K256SigningKey::from(sk);
         let signature = signing_key
             .sign_prehash_recoverable(data)
             .map_err(|e| anyhow!(e))?;
-        let result = K256Signature {
+        let result = K256AppSignature {
             public_key: Self::export_pk(sk_bytes)?,
             pre_hash: data.try_into()?,
             signature: signature.0.to_bytes().try_into()?,
@@ -233,7 +233,7 @@ impl K256 {
         Ok(result)
     }
     #[cfg(feature = "crypto-psa")]
-    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256Signature> {
+    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256AppSignature> {
         let mut result = [0u8; 64];
         let status = unsafe {
             bindings::psa_k256_sign_hash(
@@ -246,7 +246,7 @@ impl K256 {
         if status != 0 {
             anyhow::bail!("{}", status);
         }
-        let result = K256Signature {
+        let result = K256AppSignature {
             public_key: Self::export_pk(sk_bytes)?,
             pre_hash: data.try_into()?,
             signature: result.try_into()?,
@@ -346,7 +346,7 @@ impl X25519 {
     }
 }
 
-impl Nist256p1 {
+impl P256 {
     #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn add(sk: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
         use p256::elliptic_curve::ff::PrimeField;
@@ -397,7 +397,7 @@ impl Nist256p1 {
     }
 
     #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn sign(secret: &[u8], msg: &[u8]) -> Result<Nist256p1Signature> {
+    pub fn sign(secret: &[u8], msg: &[u8]) -> Result<P256AppSignature> {
         if secret.len() != 32 {
             bail!("secret key length not 32");
         }
@@ -410,7 +410,7 @@ impl Nist256p1 {
         let mut out_sig = Vec::<u8, 72>::new();
         let _ = out_sig.extend_from_slice(&sig.to_vec());
 
-        Ok(Nist256p1Signature {
+        Ok(P256AppSignature {
             public_key: pk.as_bytes().try_into()?,
             signature: out_sig,
         })

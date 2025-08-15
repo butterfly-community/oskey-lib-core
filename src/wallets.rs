@@ -3,43 +3,43 @@ use core::{str, str::FromStr};
 use anyhow::{anyhow, Result};
 use heapless::{String, Vec};
 
-use crate::alg::crypto::{Ed25519, Hash, Nist256p1, HMAC, K256, X25519};
+use crate::alg::crypto::{Ed25519, Hash, HMAC, K256, P256, X25519};
 use crate::path::{ChildNumber, DerivationPath};
 use crate::utils::ByteVec;
 
 #[derive(Clone, PartialEq, Hash, Eq, Debug, Copy)]
 pub enum Curve {
-    Secp256k1,
+    K256,
     Ed25519,
     X25519,
-    Nist256p1,
+    P256,
 }
 
 impl Curve {
     fn seed_key(&self) -> &[u8] {
         match self {
-            Curve::Secp256k1 => b"Bitcoin seed",
+            Curve::K256 => b"Bitcoin seed",
             Curve::Ed25519 => b"ed25519 seed",
             Curve::X25519 => b"curve25519 seed",
-            Curve::Nist256p1 => b"Nist256p1 seed",
+            Curve::P256 => b"Nist256p1 seed",
         }
     }
     fn version_bytes(&self, is_public: bool) -> [u8; 4] {
         match (self, is_public) {
-            (Curve::Secp256k1, false) => [0x04, 0x88, 0xAD, 0xE4], // xprv
-            (Curve::Secp256k1, true) => [0x04, 0x88, 0xB2, 0x1E],  // xpub
+            (Curve::K256, false) => [0x04, 0x88, 0xAD, 0xE4], // xprv
+            (Curve::K256, true) => [0x04, 0x88, 0xB2, 0x1E],  // xpub
             (Curve::Ed25519, false) => [0x2b, 0x00, 0x00, 0x00],
             (Curve::Ed25519, true) => [0x2c, 0x00, 0x00, 0x00],
             (Curve::X25519, false) => [0x2d, 0x00, 0x00, 0x00],
             (Curve::X25519, true) => [0x2e, 0x00, 0x00, 0x00],
-            (Curve::Nist256p1, false) => [0x2f, 0x00, 0x00, 0x00],
-            (Curve::Nist256p1, true) => [0x30, 0x00, 0x00, 0x00],
+            (Curve::P256, false) => [0x2f, 0x00, 0x00, 0x00],
+            (Curve::P256, true) => [0x30, 0x00, 0x00, 0x00],
         }
     }
 
     fn validate_child(&self, child: ChildNumber) -> Result<()> {
         match self {
-            Curve::Secp256k1 | Curve::Nist256p1 => Ok(()),
+            Curve::K256 | Curve::P256 => Ok(()),
             Curve::Ed25519 | Curve::X25519 => {
                 if child.is_hardened() {
                     Ok(())
@@ -64,7 +64,7 @@ pub struct ExtendedPrivKey {
 impl ExtendedPrivKey {
     pub fn derive(seed: &[u8], n: DerivationPath, curve: Curve) -> Result<ExtendedPrivKey> {
         let (secret_key, chain_code): ([u8; 32], [u8; 32]) = match curve {
-            Curve::Secp256k1 | Curve::Nist256p1 => {
+            Curve::K256 | Curve::P256 => {
                 let result = HMAC::hmac_sha512(curve.seed_key(), seed)?;
                 let (sk, cc) = result.split_at(32);
                 (sk.try_into().unwrap(), cc.try_into().unwrap())
@@ -96,12 +96,12 @@ impl ExtendedPrivKey {
         self.curve.validate_child(child)?;
 
         match self.curve {
-            Curve::Secp256k1 | Curve::Nist256p1 => {
+            Curve::K256 | Curve::P256 => {
                 let mut bytes = ByteVec::<128>::new();
                 if child.is_normal() {
                     let encoded_point = match self.curve {
-                        Curve::Secp256k1 => K256::export_pk_compressed(&self.secret_key)?,
-                        Curve::Nist256p1 => Nist256p1::export_pk_compressed(&self.secret_key)?,
+                        Curve::K256 => K256::export_pk_compressed(&self.secret_key)?,
+                        Curve::P256 => P256::export_pk_compressed(&self.secret_key)?,
                         _ => unreachable!(),
                     };
                     bytes.extend(&encoded_point)?;
@@ -115,8 +115,8 @@ impl ExtendedPrivKey {
                 let (il, ir) = i.split_at(32);
 
                 let child_sk = match self.curve {
-                    Curve::Secp256k1 => K256::add(&self.secret_key, il)?,
-                    Curve::Nist256p1 => Nist256p1::add(&self.secret_key, il)?,
+                    Curve::K256 => K256::add(&self.secret_key, il)?,
+                    Curve::P256 => P256::add(&self.secret_key, il)?,
                     _ => unreachable!(),
                 };
                 Ok(ExtendedPrivKey {
@@ -152,12 +152,12 @@ impl ExtendedPrivKey {
 
     pub fn export_pk(&self) -> Result<Vec<u8, 65>> {
         match self.curve {
-            Curve::Secp256k1 => {
+            Curve::K256 => {
                 let pk = K256::export_pk(&self.secret_key)?;
                 Ok(Vec::from_slice(&pk).unwrap())
             }
-            Curve::Nist256p1 => {
-                let pk = Nist256p1::export_pk(&self.secret_key)?;
+            Curve::P256 => {
+                let pk = P256::export_pk(&self.secret_key)?;
                 Ok(Vec::from_slice(&pk).unwrap())
             }
             Curve::Ed25519 => {
@@ -173,12 +173,12 @@ impl ExtendedPrivKey {
 
     pub fn sign(&self, msg: &[u8]) -> Result<Vec<u8, 64>> {
         match self.curve {
-            Curve::Secp256k1 => {
+            Curve::K256 => {
                 let sig = K256::sign(&self.secret_key, msg)?;
                 Ok(Vec::from_slice(&sig.signature).expect("Signature fits in Vec<u8, 64>"))
             }
-            Curve::Nist256p1 => {
-                let sig = Nist256p1::sign(&self.secret_key, msg)?;
+            Curve::P256 => {
+                let sig = P256::sign(&self.secret_key, msg)?;
                 Ok(Vec::from_slice(&sig.signature).expect("Signature fits in Vec<u8, 64>"))
             }
             Curve::Ed25519 => {
@@ -191,8 +191,8 @@ impl ExtendedPrivKey {
 
     pub fn fingerprint(&self) -> Result<[u8; 4]> {
         let pub_key_slice: &[u8] = match self.curve {
-            Curve::Secp256k1 => &K256::export_pk_compressed(&self.secret_key)?[..],
-            Curve::Nist256p1 => &Nist256p1::export_pk_compressed(&self.secret_key)?[..],
+            Curve::K256 => &K256::export_pk_compressed(&self.secret_key)?[..],
+            Curve::P256 => &P256::export_pk_compressed(&self.secret_key)?[..],
             Curve::Ed25519 => &Ed25519::export_pk(&self.secret_key)?[..],
             Curve::X25519 => &X25519::export_pk(&self.secret_key)?[..],
         };
@@ -229,15 +229,15 @@ impl ExtendedPrivKey {
         // 6. key data
         if is_public {
             let pub_key: &[u8] = match self.curve {
-                Curve::Secp256k1 => &K256::export_pk_compressed(&self.secret_key)?[..],
-                Curve::Nist256p1 => &Nist256p1::export_pk_compressed(&self.secret_key)?[..],
+                Curve::K256 => &K256::export_pk_compressed(&self.secret_key)?[..],
+                Curve::P256 => &P256::export_pk_compressed(&self.secret_key)?[..],
                 Curve::Ed25519 => &Ed25519::export_pk(&self.secret_key)?[..],
                 Curve::X25519 => &X25519::export_pk(&self.secret_key)?[..],
             };
             data.extend(pub_key)?;
         } else {
             match self.curve {
-                Curve::Secp256k1 | Curve::Nist256p1 => {
+                Curve::K256 | Curve::P256 => {
                     data.push(0)?;
                     data.extend(&self.secret_key)?;
                 }
@@ -603,7 +603,7 @@ mod test {
         test_vectors
     }
 
-    pub fn get_test_vector_nist256p1() -> Vec<[&'static str; 4], 16> {
+    pub fn get_test_vector_p256() -> Vec<[&'static str; 4], 16> {
         let mut test_vectors = Vec::new();
 
         test_vectors
@@ -725,22 +725,22 @@ mod test {
 
     #[test]
     fn test_bip32_vector1() -> Result<()> {
-        run_test_vector(get_test_vector_1(), Curve::Secp256k1)
+        run_test_vector(get_test_vector_1(), Curve::K256)
     }
 
     #[test]
     fn test_bip32_vector2() -> Result<()> {
-        run_test_vector(get_test_vector_2(), Curve::Secp256k1)
+        run_test_vector(get_test_vector_2(), Curve::K256)
     }
 
     #[test]
     fn test_bip32_vector3() -> Result<()> {
-        run_test_vector(get_test_vector_3(), Curve::Secp256k1)
+        run_test_vector(get_test_vector_3(), Curve::K256)
     }
 
     #[test]
     fn test_bip32_vector4() -> Result<()> {
-        run_test_vector(get_test_vector_4(), Curve::Secp256k1)
+        run_test_vector(get_test_vector_4(), Curve::K256)
     }
 
     #[test]
@@ -754,7 +754,7 @@ mod test {
     }
 
     #[test]
-    fn test_bip32_nist256p1() -> Result<()> {
-        run_test_vector(get_test_vector_nist256p1(), Curve::Nist256p1)
+    fn test_bip32_p256() -> Result<()> {
+        run_test_vector(get_test_vector_p256(), Curve::P256)
     }
 }
