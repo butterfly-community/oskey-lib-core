@@ -40,7 +40,7 @@ pub struct K256AppSignature {
 #[derive(Debug, Clone)]
 pub struct P256AppSignature {
     pub public_key: [u8; 65],
-    pub signature: Vec<u8, 72>, // DER
+    pub signature: Vec<u8, 72>,
 }
 
 impl Hash {
@@ -304,10 +304,8 @@ impl X25519 {
         let t = Scalar::from_bytes_mod_order(tweak.try_into()?);
         let child = s + t;
 
-        // Convert back to bytes
         let mut bytes = child.to_bytes();
 
-        // X25519 requires clamping
         bytes[0] &= 248;
         bytes[31] &= 127;
         bytes[31] |= 64;
@@ -327,7 +325,6 @@ impl X25519 {
         let mut secret_key = [0u8; 32];
         secret_key.copy_from_slice(secret);
 
-        // X25519 clamping
         secret_key[0] &= 248;
         secret_key[31] &= 127;
         secret_key[31] |= 64;

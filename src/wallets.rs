@@ -414,7 +414,7 @@ mod test {
 
     pub fn get_slip10_ed25519_vector() -> Vec<[&'static str; 4], 16> {
         let mut test_vectors = Vec::new();
-        // Test Vector 1
+
         test_vectors
             .push([
                 "000102030405060708090a0b0c0d0e0f",
@@ -463,7 +463,7 @@ mod test {
                 "003c24da049451555d51a7014a37337aa4e12d41e485abccfa46b47dfb2af54b7a",
             ])
             .unwrap();
-        // Test Vector 2
+
         test_vectors.push([
         "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
         "m",
@@ -505,7 +505,7 @@ mod test {
 
     pub fn get_slip10_x25519_vector() -> Vec<[&'static str; 4], 16> {
         let mut test_vectors = Vec::new();
-        // Test Vector 1: Seed 000102030405060708090a0b0c0d0e0f
+
         test_vectors
             .push([
                 "000102030405060708090a0b0c0d0e0f",
@@ -554,7 +554,7 @@ mod test {
                 "00a077fcf5af53d210257d44a86eb2031233ac7237da220434ac01a0bebccc1919",
             ])
             .unwrap();
-        // Test Vector 2: Seed fffcf9f6...
+
         test_vectors.push([
             "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
             "m",
