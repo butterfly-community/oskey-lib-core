@@ -26,8 +26,8 @@ impl Curve {
     }
     fn version_bytes(&self, is_public: bool) -> [u8; 4] {
         match (self, is_public) {
-            (Curve::K256, false) => [0x04, 0x88, 0xAD, 0xE4], // xprv
-            (Curve::K256, true) => [0x04, 0x88, 0xB2, 0x1E],  // xpub
+            (Curve::K256, false) => [0x04, 0x88, 0xAD, 0xE4],
+            (Curve::K256, true) => [0x04, 0x88, 0xB2, 0x1E],
             (Curve::Ed25519, false) => [0x2b, 0x00, 0x00, 0x00],
             (Curve::Ed25519, true) => [0x2c, 0x00, 0x00, 0x00],
             (Curve::X25519, false) => [0x2d, 0x00, 0x00, 0x00],
@@ -127,7 +127,6 @@ impl ExtendedPrivKey {
                 })
             }
             Curve::Ed25519 | Curve::X25519 => {
-                // SLIP-0010: data = 0x00 || k_par || i_be
                 let mut data = ByteVec::<128>::new();
                 data.push(0)?;
                 data.extend(&self.secret_key)?;
