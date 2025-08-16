@@ -17,7 +17,6 @@ build = []
 bit-vec = { version = "0.8", default-features = false }
 anyhow = { version = "1.0", default-features = false }
 heapless = { version = "0.8", default-features = false }
-zeroize = { version = "1.8", default-features = false }
 bs58 = { version = "0.5",features = ["check"],default-features = false }
 
 
