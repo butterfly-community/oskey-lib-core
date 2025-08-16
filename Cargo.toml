@@ -37,4 +37,4 @@ hex = { version = "0.4", default-features = false, features = ["alloc"] }
 
 [build-dependencies]
 cmake = { version = "0.1" }
-bindgen = { version = "0.71" }
+bindgen = { version = "0.72" }
