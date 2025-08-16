@@ -114,7 +114,7 @@ impl ExtendedPrivKey {
                 let (il, ir) = i.split_at(32);
 
                 let child_sk = match self.curve {
-                    Curve::K256 => K256::add(&self.secret_key, il)?,
+                    Curve::K256 => K256::tweak_key(&self.secret_key, il)?,
                     _ => unreachable!(),
                 };
                 Ok(ExtendedPrivKey {

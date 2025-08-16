@@ -190,7 +190,7 @@ impl K256 {
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn add(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
+    pub fn tweak_key(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
         let sk1 = K256SecretKey::from_slice(num1).map_err(|e| anyhow!(e))?;
         let sk2 = K256SecretKey::from_slice(num2).map_err(|e| anyhow!(e))?;
         let new_secret_key = sk1
@@ -201,7 +201,7 @@ impl K256 {
     }
 
     #[cfg(feature = "crypto-psa")]
-    pub fn add(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
+    pub fn tweak_key(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
         let mut result = [0u8; 32];
         let status = unsafe {
             bindings::psa_k256_add_num(num1.as_ptr(), num2.as_ptr(), result.as_mut_ptr())
@@ -428,6 +428,20 @@ mod tests {
         let sig = Ed25519::sign(&sk, msg).unwrap();
         let expected_sig = hex::decode("98a39ec11a0dfbbfdbd7a7e2394b2b83a16586e92100bcb9be672ddfba3e7acb861c94d6ad4cf6e3e60136ca141fc4f2f1be0c1b8ef0bea12aee76f007a4c30a").unwrap();
         assert_eq!(sig.as_slice(), expected_sig.as_slice());
+    }
+
+    #[test]
+    fn test_ed25519_get_pk() {
+        let sk = hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+            .unwrap();
+
+        let sk_array: [u8; 32] = sk.try_into().unwrap();
+        let pk = Ed25519::export_pk(&sk_array).unwrap();
+
+        let pk_hex =
+            hex::decode("00D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A")
+                .unwrap();
+        assert_eq!(pk, pk_hex.as_slice());
     }
 
     #[test]
