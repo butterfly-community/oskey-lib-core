@@ -8,15 +8,11 @@ use ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey};
 #[cfg(feature = "crypto-rs")]
 use hmac::{Hmac, Mac};
 #[cfg(feature = "crypto-rs")]
-use k256::{ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToEncodedPoint, SecretKey};
-#[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-use p256::{
-    ecdsa::{
-        signature::Signer as P256Signer, signature::Verifier as P256Verifier,
-        Signature as P256Signature, SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey,
-    },
-    SecretKey as P256SecretKey,
+use k256::{
+    ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToEncodedPoint,
+    SecretKey as K256SecretKey,
 };
+
 #[cfg(feature = "crypto-rs")]
 use pbkdf2::pbkdf2_hmac;
 #[cfg(feature = "crypto-rs")]
@@ -149,7 +145,7 @@ impl K256 {
         if sk.len() != 32 {
             bail!("sk len not 32, current {}", sk.len())
         }
-        let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
+        let sk = K256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
         let pk = sk.public_key().to_encoded_point(true);
         Ok(pk.as_bytes().try_into()?)
     }
@@ -173,7 +169,7 @@ impl K256 {
         if sk.len() != 32 {
             bail!("sk len not 32, current {}", sk.len())
         }
-        let sk = SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
+        let sk = K256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
         let pk = sk.public_key().to_encoded_point(false);
         Ok(pk.as_bytes().try_into()?)
     }
@@ -195,8 +191,8 @@ impl K256 {
 
     #[cfg(feature = "crypto-rs")]
     pub fn add(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
-        let sk1 = SecretKey::from_slice(num1).map_err(|e| anyhow!(e))?;
-        let sk2 = SecretKey::from_slice(num2).map_err(|e| anyhow!(e))?;
+        let sk1 = K256SecretKey::from_slice(num1).map_err(|e| anyhow!(e))?;
+        let sk2 = K256SecretKey::from_slice(num2).map_err(|e| anyhow!(e))?;
         let new_secret_key = sk1
             .to_nonzero_scalar()
             .add(&sk2.to_nonzero_scalar())
@@ -219,7 +215,7 @@ impl K256 {
 
     #[cfg(feature = "crypto-rs")]
     pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256AppSignature> {
-        let sk = SecretKey::from_slice(sk_bytes).map_err(|e| anyhow!(e))?;
+        let sk = K256SecretKey::from_slice(sk_bytes).map_err(|e| anyhow!(e))?;
         let signing_key = K256SigningKey::from(sk);
         let signature = signing_key
             .sign_prehash_recoverable(data)
@@ -260,7 +256,7 @@ impl Ed25519 {
     #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn tweak_key(secret: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
         if secret.len() != 32 || tweak.len() != 32 {
-            bail!("error，secret: {}, tweak: {}", secret.len(), tweak.len());
+            bail!("error, secret: {}, tweak: {}", secret.len(), tweak.len());
         }
         let mut child_secret = [0u8; 32];
         child_secret.copy_from_slice(secret);
@@ -343,84 +339,6 @@ impl X25519 {
         out[0] = 0x00;
         out[1..].copy_from_slice(&public_key.to_bytes());
         Ok(out)
-    }
-}
-
-impl P256 {
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn add(sk: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
-        use p256::elliptic_curve::ff::PrimeField;
-        use p256::elliptic_curve::Field;
-        use p256::FieldBytes;
-
-        if sk.len() != 32 || tweak.len() != 32 {
-            bail!("sk or tweak length != 32");
-        }
-
-        let sk_scalar =
-            Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(sk)))
-                .ok_or_else(|| anyhow!("invalid sk scalar"))?;
-        let tweak_scalar =
-            Option::<p256::Scalar>::from(p256::Scalar::from_repr(*FieldBytes::from_slice(tweak)))
-                .ok_or_else(|| anyhow!("invalid tweak scalar"))?;
-
-        let sum = sk_scalar + tweak_scalar;
-        if sum.is_zero().into() {
-            bail!("derived zero key");
-        }
-
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&sum.to_repr());
-        Ok(out)
-    }
-
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
-        if sk.len() != 32 {
-            bail!("sk len not 32, current {}", sk.len())
-        }
-        let sk = P256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
-        let pk = sk.public_key().to_encoded_point(true);
-        Ok(pk.as_bytes().try_into()?)
-    }
-
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn export_pk(sk: &[u8]) -> Result<[u8; 33]> {
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
-        if sk.len() != 32 {
-            bail!("sk len not 32, current {}", sk.len())
-        }
-        let sk = P256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
-        let pk = sk.public_key().to_encoded_point(true); // true = compressed
-        Ok(pk.as_bytes().try_into()?)
-    }
-
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn sign(secret: &[u8], msg: &[u8]) -> Result<P256AppSignature> {
-        if secret.len() != 32 {
-            bail!("secret key length not 32");
-        }
-
-        let signing_key = P256SigningKey::from_bytes(secret.into()).map_err(|e| anyhow!(e))?;
-        let verifying_key = signing_key.verifying_key();
-        let sig: P256Signature = P256Signer::sign(&signing_key, msg);
-
-        let pk = verifying_key.to_encoded_point(false);
-        let mut out_sig = Vec::<u8, 72>::new();
-        let _ = out_sig.extend_from_slice(&sig.to_vec());
-
-        Ok(P256AppSignature {
-            public_key: pk.as_bytes().try_into()?,
-            signature: out_sig,
-        })
-    }
-
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn verify(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<bool> {
-        let verifying_key = P256VerifyingKey::from_sec1_bytes(pk).map_err(|e| anyhow!(e))?;
-        let sig = P256Signature::from_der(sig).map_err(|e| anyhow!(e))?;
-        Ok(P256Verifier::verify(&verifying_key, msg, &sig).is_ok())
     }
 }
 

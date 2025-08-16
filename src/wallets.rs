@@ -3,7 +3,7 @@ use core::{str, str::FromStr};
 use anyhow::{anyhow, Result};
 use heapless::{String, Vec};
 
-use crate::alg::crypto::{Ed25519, Hash, HMAC, K256, P256, X25519};
+use crate::alg::crypto::{Ed25519, Hash, HMAC, K256, X25519};
 use crate::path::{ChildNumber, DerivationPath};
 use crate::utils::ByteVec;
 
@@ -62,7 +62,7 @@ pub struct ExtendedPrivKey {
 }
 
 impl ExtendedPrivKey {
-    pub fn derive(seed: &[u8], n: DerivationPath, curve: Curve) -> Result<ExtendedPrivKey> {
+    pub fn derive(seed: &[u8], path: DerivationPath, curve: Curve) -> Result<ExtendedPrivKey> {
         let (secret_key, chain_code): ([u8; 32], [u8; 32]) = match curve {
             Curve::K256 | Curve::P256 => {
                 let result = HMAC::hmac_sha512(curve.seed_key(), seed)?;
@@ -85,7 +85,7 @@ impl ExtendedPrivKey {
             chain_code,
         };
 
-        for child in n.iter() {
+        for child in path.iter() {
             sk = sk.child(*child)?;
         }
 
@@ -101,7 +101,6 @@ impl ExtendedPrivKey {
                 if child.is_normal() {
                     let encoded_point = match self.curve {
                         Curve::K256 => K256::export_pk_compressed(&self.secret_key)?,
-                        Curve::P256 => P256::export_pk_compressed(&self.secret_key)?,
                         _ => unreachable!(),
                     };
                     bytes.extend(&encoded_point)?;
@@ -116,7 +115,6 @@ impl ExtendedPrivKey {
 
                 let child_sk = match self.curve {
                     Curve::K256 => K256::add(&self.secret_key, il)?,
-                    Curve::P256 => P256::add(&self.secret_key, il)?,
                     _ => unreachable!(),
                 };
                 Ok(ExtendedPrivKey {
@@ -156,10 +154,6 @@ impl ExtendedPrivKey {
                 let pk = K256::export_pk(&self.secret_key)?;
                 Ok(Vec::from_slice(&pk).unwrap())
             }
-            Curve::P256 => {
-                let pk = P256::export_pk(&self.secret_key)?;
-                Ok(Vec::from_slice(&pk).unwrap())
-            }
             Curve::Ed25519 => {
                 let pk = Ed25519::export_pk(&self.secret_key)?;
                 Ok(Vec::from_slice(&pk).unwrap())
@@ -168,6 +162,7 @@ impl ExtendedPrivKey {
                 let pk = X25519::export_pk(&self.secret_key)?;
                 Ok(Vec::from_slice(&pk).unwrap())
             }
+            _ => unreachable!(),
         }
     }
 
@@ -177,24 +172,21 @@ impl ExtendedPrivKey {
                 let sig = K256::sign(&self.secret_key, msg)?;
                 Ok(Vec::from_slice(&sig.signature).expect("Signature fits in Vec<u8, 64>"))
             }
-            Curve::P256 => {
-                let sig = P256::sign(&self.secret_key, msg)?;
-                Ok(Vec::from_slice(&sig.signature).expect("Signature fits in Vec<u8, 64>"))
-            }
             Curve::Ed25519 => {
                 let sig = Ed25519::sign(&self.secret_key, msg)?;
                 Ok(Vec::from_slice(&sig).expect("Signature fits in Vec<u8, 64>"))
             }
             Curve::X25519 => Err(anyhow!("X25519 keys cannot be used for signing")),
+            _ => unreachable!(),
         }
     }
 
     pub fn fingerprint(&self) -> Result<[u8; 4]> {
         let pub_key_slice: &[u8] = match self.curve {
             Curve::K256 => &K256::export_pk_compressed(&self.secret_key)?[..],
-            Curve::P256 => &P256::export_pk_compressed(&self.secret_key)?[..],
             Curve::Ed25519 => &Ed25519::export_pk(&self.secret_key)?[..],
             Curve::X25519 => &X25519::export_pk(&self.secret_key)?[..],
+            _ => unreachable!(),
         };
 
         let pub_key =
@@ -230,9 +222,9 @@ impl ExtendedPrivKey {
         if is_public {
             let pub_key: &[u8] = match self.curve {
                 Curve::K256 => &K256::export_pk_compressed(&self.secret_key)?[..],
-                Curve::P256 => &P256::export_pk_compressed(&self.secret_key)?[..],
                 Curve::Ed25519 => &Ed25519::export_pk(&self.secret_key)?[..],
                 Curve::X25519 => &X25519::export_pk(&self.secret_key)?[..],
+                _ => unreachable!(),
             };
             data.extend(pub_key)?;
         } else {
@@ -603,108 +595,6 @@ mod test {
         test_vectors
     }
 
-    pub fn get_test_vector_p256() -> Vec<[&'static str; 4], 16> {
-        let mut test_vectors = Vec::new();
-
-        test_vectors
-            .push([
-                "000102030405060708090a0b0c0d0e0f",
-                "m",
-                "612091aaa12e22dd2abef664f8a01a82cae99ad7441b7ef8110424915c268bc2",
-                "0266874dc6ade47b3ecd096745ca09bcd29638dd52c2c12117b11ed3e458cfa9e8",
-            ])
-            .unwrap();
-
-        test_vectors
-            .push([
-                "000102030405060708090a0b0c0d0e0f",
-                "m/0'",
-                "6939694369114c67917a182c59ddb8cafc3004e63ca5d3b84403ba8613debc0c",
-                "0384610f5ecffe8fda089363a41f56a5c7ffc1d81b59a612d0d649b2d22355590c",
-            ])
-            .unwrap();
-
-        test_vectors
-            .push([
-                "000102030405060708090a0b0c0d0e0f",
-                "m/0'/1",
-                "284e9d38d07d21e4e281b645089a94f4cf5a5a81369acf151a1c3a57f18b2129",
-                "03526c63f8d0b4bbbf9c80df553fe66742df4676b241dabefdef67733e070f6844",
-            ])
-            .unwrap();
-
-        test_vectors
-            .push([
-                "000102030405060708090a0b0c0d0e0f",
-                "m/0'/1/2'",
-                "694596e8a54f252c960eb771a3c41e7e32496d03b954aeb90f61635b8e092aa7",
-                "0359cf160040778a4b14c5f4d7b76e327ccc8c4a6086dd9451b7482b5a4972dda0",
-            ])
-            .unwrap();
-
-        test_vectors
-            .push([
-                "000102030405060708090a0b0c0d0e0f",
-                "m/0'/1/2'/2",
-                "5996c37fd3dd2679039b23ed6f70b506c6b56b3cb5e424681fb0fa64caf82aaa",
-                "029f871f4cb9e1c97f9f4de9ccd0d4a2f2a171110c61178f84430062230833ff20",
-            ])
-            .unwrap();
-
-        test_vectors
-            .push([
-                "000102030405060708090a0b0c0d0e0f",
-                "m/0'/1/2'/2/1000000000",
-                "21c4f269ef0a5fd1badf47eeacebeeaa3de22eb8e5b0adcd0f27dd99d34d0119",
-                "02216cd26d31147f72427a453c443ed2cde8a1e53c9cc44e5ddf739725413fe3f4",
-            ])
-            .unwrap();
-
-        test_vectors.push([
-            "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
-            "m",
-            "eaa31c2e46ca2962227cf21d73a7ef0ce8b31c756897521eb6c7b39796633357",
-            "02c9e16154474b3ed5b38218bb0463e008f89ee03e62d22fdcc8014beab25b48fa",
-        ]).unwrap();
-
-        test_vectors.push([
-            "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
-            "m/0",
-            "d7d065f63a62624888500cdb4f88b6d59c2927fee9e6d0cdff9cad555884df6e",
-            "039b6df4bece7b6c81e2adfeea4bcf5c8c8a6e40ea7ffa3cf6e8494c61a1fc82cc",
-        ]).unwrap();
-
-        test_vectors.push([
-            "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
-            "m/0/2147483647'",
-            "96d2ec9316746a75e7793684ed01e3d51194d81a42a3276858a5b7376d4b94b9",
-            "02f89c5deb1cae4fedc9905f98ae6cbf6cbab120d8cb85d5bd9a91a72f4c068c76",
-        ]).unwrap();
-
-        test_vectors.push([
-            "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
-            "m/0/2147483647'/1",
-            "974f9096ea6873a915910e82b29d7c338542ccde39d2064d1cc228f371542bbc",
-            "03abe0ad54c97c1d654c1852dfdc32d6d3e487e75fa16f0fd6304b9ceae4220c64",
-        ]).unwrap();
-
-        test_vectors.push([
-            "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
-            "m/0/2147483647'/1/2147483646'",
-            "da29649bbfaff095cd43819eda9a7be74236539a29094cd8336b07ed8d4eff63",
-            "03cb8cb067d248691808cd6b5a5a06b48e34ebac4d965cba33e6dc46fe13d9b933",
-        ]).unwrap();
-
-        test_vectors.push([
-            "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542",
-            "m/0/2147483647'/1/2147483646'/2",
-            "bb0a77ba01cc31d77205d51d08bd313b979a71ef4de9b062f8958297e746bd67",
-            "020ee02e18967237cf62672983b253ee62fa4dd431f8243bfeccdf39dbe181387f",
-        ]).unwrap();
-
-        test_vectors
-    }
-
     fn run_test_vector(test_vectors: Vec<[&'static str; 4], 16>, curve: Curve) -> Result<()> {
         for case in &test_vectors {
             let seed = hex::decode(&case[0]).unwrap();
@@ -751,10 +641,5 @@ mod test {
     #[test]
     fn test_slip10_x25519() -> Result<()> {
         run_test_vector(get_slip10_x25519_vector(), Curve::X25519)
-    }
-
-    #[test]
-    fn test_bip32_p256() -> Result<()> {
-        run_test_vector(get_test_vector_p256(), Curve::P256)
     }
 }
