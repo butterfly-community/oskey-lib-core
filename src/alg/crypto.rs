@@ -2,8 +2,7 @@
 use crate::alg::bindings;
 use anyhow::{anyhow, bail, Ok, Result};
 use heapless::Vec;
-
-#[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
+#[cfg(feature = "crypto-rs")]
 use ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey};
 #[cfg(feature = "crypto-rs")]
 use hmac::{Hmac, Mac};
@@ -19,7 +18,7 @@ use pbkdf2::pbkdf2_hmac;
 use ripemd::Ripemd160;
 #[cfg(feature = "crypto-rs")]
 use sha2::{Digest, Sha256, Sha512};
-#[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
+#[cfg(feature = "crypto-rs")]
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 pub struct Hash;
 pub struct PBKDF2;
@@ -266,7 +265,7 @@ impl Ed25519 {
         Ok(child_secret)
     }
 
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
+    #[cfg(feature = "crypto-rs")]
     pub fn export_pk(sk: &[u8; 32]) -> Result<[u8; 33]> {
         use ed25519_dalek::SigningKey;
         let signing_key = SigningKey::from_bytes(sk);
@@ -276,7 +275,23 @@ impl Ed25519 {
         out[1..].copy_from_slice(verifying_key.as_bytes());
         Ok(out)
     }
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn export_pk(sk: &[u8; 32]) -> Result<[u8; 33]> {
+        #[allow(unused_imports)]
+        use crate::alg::bindings;
+        let mut out = [0u8; 33];
+        let status = unsafe {
+            bindings::psa_ed25519_export_pk_from_seed(sk.as_ptr(), out.as_mut_ptr())
+        };
+        if status == 0 {
+            Ok(out)
+        } else {
+            anyhow::bail!("{}", status)
+        }
+    }
+
+    #[cfg(feature = "crypto-rs")]
     pub fn sign(secret: &[u8], msg: &[u8]) -> Result<[u8; 64]> {
         if secret.len() != 32 {
             bail!("lenth error: {}", secret.len());
@@ -284,6 +299,29 @@ impl Ed25519 {
         let secret_key = EdSigningKey::from_bytes(secret.try_into()?);
         let signature: Signature = secret_key.sign(msg);
         Ok(signature.to_bytes())
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn sign(secret: &[u8], msg: &[u8]) -> Result<[u8; 64]> {
+        if secret.len() != 32 {
+            bail!("lenth error: {}", secret.len());
+        }
+        #[allow(unused_imports)]
+        use crate::alg::bindings;
+        let mut sig = [0u8; 64];
+        let status = unsafe {
+            bindings::psa_ed25519_sign_from_seed(
+                secret.as_ptr(),
+                msg.as_ptr(),
+                msg.len(),
+                sig.as_mut_ptr(),
+            )
+        };
+        if status == 0 {
+            Ok(sig)
+        } else {
+            anyhow::bail!("{}", status)
+        }
     }
 }
 
@@ -315,27 +353,47 @@ impl X25519 {
 
     #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
     pub fn export_pk(secret: &[u8]) -> Result<[u8; 33]> {
-        if secret.len() != 32 {
-            return Err(anyhow!(
-                "Invalid secret length: expected 32, got {}",
-                secret.len()
-            ));
+        #[cfg(feature = "crypto-rs")]
+        {
+            if secret.len() != 32 {
+                return Err(anyhow!(
+                    "Invalid secret length: expected 32, got {}",
+                    secret.len()
+                ));
+            }
+
+            let mut secret_key = [0u8; 32];
+            secret_key.copy_from_slice(secret);
+
+            secret_key[0] &= 248;
+            secret_key[31] &= 127;
+            secret_key[31] |= 64;
+
+            let x25519_secret = X25519Secret::from(secret_key);
+            let public_key = X25519PublicKey::from(&x25519_secret);
+
+            let mut out = [0u8; 33];
+            out[0] = 0x00;
+            out[1..].copy_from_slice(&public_key.to_bytes());
+            Ok(out)
         }
-
-        let mut secret_key = [0u8; 32];
-        secret_key.copy_from_slice(secret);
-
-        secret_key[0] &= 248;
-        secret_key[31] &= 127;
-        secret_key[31] |= 64;
-
-        let x25519_secret = X25519Secret::from(secret_key);
-        let public_key = X25519PublicKey::from(&x25519_secret);
-
-        let mut out = [0u8; 33];
-        out[0] = 0x00;
-        out[1..].copy_from_slice(&public_key.to_bytes());
-        Ok(out)
+        #[cfg(feature = "crypto-psa")]
+        {
+            if secret.len() != 32 {
+                bail!("Invalid secret length: {}", secret.len());
+            }
+            #[allow(unused_imports)]
+            use crate::alg::bindings;
+            let mut out = [0u8; 33];
+            let status = unsafe {
+                bindings::psa_x25519_export_pk_from_secret(secret.as_ptr(), out.as_mut_ptr())
+            };
+            if status == 0 {
+                Ok(out)
+            } else {
+                anyhow::bail!("{}", status)
+            }
+        }
     }
 }
 
