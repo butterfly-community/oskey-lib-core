@@ -1,9 +1,9 @@
 #[cfg(feature = "crypto-psa")]
 use crate::alg::bindings;
 use anyhow::{anyhow, bail, Ok, Result};
-use heapless::Vec;
 #[cfg(feature = "crypto-rs")]
 use ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey};
+use heapless::Vec;
 #[cfg(feature = "crypto-rs")]
 use hmac::{Hmac, Mac};
 #[cfg(feature = "crypto-rs")]
@@ -281,9 +281,8 @@ impl Ed25519 {
         #[allow(unused_imports)]
         use crate::alg::bindings;
         let mut out = [0u8; 33];
-        let status = unsafe {
-            bindings::psa_ed25519_export_pk_from_seed(sk.as_ptr(), out.as_mut_ptr())
-        };
+        let status =
+            unsafe { bindings::psa_ed25519_export_pk_from_seed(sk.as_ptr(), out.as_mut_ptr()) };
         if status == 0 {
             Ok(out)
         } else {

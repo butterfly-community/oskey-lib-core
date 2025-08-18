@@ -256,3 +256,21 @@ unsafe extern "C" {
         signature: *mut u8,
     ) -> i32;
 }
+unsafe extern "C" {
+    pub fn psa_ed25519_export_pk_from_seed(seed32: *const u8, out33: *mut u8)
+    -> ::core::ffi::c_int;
+}
+unsafe extern "C" {
+    pub fn psa_ed25519_sign_from_seed(
+        seed32: *const u8,
+        msg: *const u8,
+        msg_len: usize,
+        sig64: *mut u8,
+    ) -> ::core::ffi::c_int;
+}
+unsafe extern "C" {
+    pub fn psa_x25519_export_pk_from_secret(
+        secret32: *const u8,
+        out33: *mut u8,
+    ) -> ::core::ffi::c_int;
+}
