@@ -1,10 +1,11 @@
 #include <psa/crypto.h>
 #include <string.h>
 #include "option.h"
+#include "psa_init.h"
 
 int32_t psa_k256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *public_key)
 {
-	psa_status_t status = psa_crypto_init();
+	psa_status_t status = psa_crypto_init_once();
 	if (status != PSA_SUCCESS) {
 		return status;
 	}
@@ -137,7 +138,7 @@ int32_t psa_k256_sign_hash(const uint8_t *private_key, const uint8_t *hash, size
 			   uint8_t *signature)
 {
 	size_t signature_length;
-	psa_status_t status = psa_crypto_init();
+	psa_status_t status = psa_crypto_init_once();
 	if (status != PSA_SUCCESS) {
 		return status;
 	}
