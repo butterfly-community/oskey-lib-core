@@ -1,5 +1,5 @@
 [package]
-name = "ohw-wallets"
+name = "oskey-wallets"
 version = "0.0.1"
 edition = "2021"
 description = ""
@@ -26,9 +26,9 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["simple"], op
 hmac = { version = "0.12", default-features = false, optional = true }
 ripemd = { version = "0.1.3", default-features = false, optional = true }
 k256 = { version = "0.13", default-features = false, features = ["ecdsa"], optional = true }
-ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"], optional = true }
+ed25519-dalek = { version = "2.1", default-features = false, optional = true }
 x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets"], optional = true }
-curve25519-dalek = { version = "4.1.3", default-features = false, features = ["alloc"], optional = true }
+curve25519-dalek = { version = "4.1.3", default-features = false, optional = true }
 
 
 [dev-dependencies]
