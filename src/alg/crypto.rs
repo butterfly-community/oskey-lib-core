@@ -1,31 +1,27 @@
 #[cfg(feature = "crypto-psa")]
 use crate::alg::bindings;
 use anyhow::{anyhow, bail, Ok, Result};
-#[cfg(feature = "crypto-rs")]
-use ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey};
 use heapless::Vec;
 #[cfg(feature = "crypto-rs")]
-use hmac::{Hmac, Mac};
-#[cfg(feature = "crypto-rs")]
-use k256::{
-    ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToEncodedPoint,
-    SecretKey as K256SecretKey,
+use {
+    ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey},
+    hmac::{Hmac, Mac},
+    k256::{
+        ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToEncodedPoint,
+        SecretKey as K256SecretKey,
+    },
+    pbkdf2::pbkdf2_hmac,
+    ripemd::Ripemd160,
+    sha2::{Digest, Sha256, Sha512},
+    x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret},
 };
 
-#[cfg(feature = "crypto-rs")]
-use pbkdf2::pbkdf2_hmac;
-#[cfg(feature = "crypto-rs")]
-use ripemd::Ripemd160;
-#[cfg(feature = "crypto-rs")]
-use sha2::{Digest, Sha256, Sha512};
-#[cfg(feature = "crypto-rs")]
-use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 pub struct Hash;
 pub struct PBKDF2;
 pub struct HMAC;
 pub struct K256;
 pub struct Ed25519;
-pub struct X25519;
+pub struct Curve25519;
 pub struct P256;
 
 #[derive(Debug, Clone)]
@@ -252,23 +248,9 @@ impl K256 {
 }
 
 impl Ed25519 {
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn tweak_key(secret: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
-        if secret.len() != 32 || tweak.len() != 32 {
-            bail!("error, secret: {}, tweak: {}", secret.len(), tweak.len());
-        }
-        let mut child_secret = [0u8; 32];
-        child_secret.copy_from_slice(secret);
-        for (i, &t) in tweak.iter().enumerate() {
-            child_secret[i] = child_secret[i].wrapping_add(t);
-        }
-        Ok(child_secret)
-    }
-
     #[cfg(feature = "crypto-rs")]
     pub fn export_pk(sk: &[u8; 32]) -> Result<[u8; 33]> {
-        use ed25519_dalek::SigningKey;
-        let signing_key = SigningKey::from_bytes(sk);
+        let signing_key = EdSigningKey::from_bytes(sk);
         let verifying_key = signing_key.verifying_key();
         let mut out = [0u8; 33];
         out[0] = 0x00;
@@ -278,8 +260,6 @@ impl Ed25519 {
 
     #[cfg(feature = "crypto-psa")]
     pub fn export_pk(sk: &[u8; 32]) -> Result<[u8; 33]> {
-        #[allow(unused_imports)]
-        use crate::alg::bindings;
         let mut out = [0u8; 33];
         let status =
             unsafe { bindings::psa_ed25519_export_pk_from_seed(sk.as_ptr(), out.as_mut_ptr()) };
@@ -324,74 +304,45 @@ impl Ed25519 {
     }
 }
 
-impl X25519 {
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
-    pub fn tweak_key(secret: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
-        use curve25519_dalek::scalar::Scalar;
-
-        if secret.len() != 32 || tweak.len() != 32 {
-            bail!(
-                "Invalid secret or tweak length: {}, {}",
-                secret.len(),
-                tweak.len()
-            );
+impl Curve25519 {
+    #[cfg(feature = "crypto-rs")]
+    pub fn export_pk(secret: &[u8]) -> Result<[u8; 33]> {
+        if secret.len() != 32 {
+            return Err(anyhow!(
+                "Invalid secret length: expected 32, got {}",
+                secret.len()
+            ));
         }
 
-        let s = Scalar::from_bytes_mod_order(secret.try_into()?);
-        let t = Scalar::from_bytes_mod_order(tweak.try_into()?);
-        let child = s + t;
+        let mut secret_key = [0u8; 32];
+        secret_key.copy_from_slice(secret);
 
-        let mut bytes = child.to_bytes();
+        secret_key[0] &= 248;
+        secret_key[31] &= 127;
+        secret_key[31] |= 64;
 
-        bytes[0] &= 248;
-        bytes[31] &= 127;
-        bytes[31] |= 64;
+        let x25519_secret = X25519Secret::from(secret_key);
+        let public_key = X25519PublicKey::from(&x25519_secret);
 
-        Ok(bytes)
+        let mut out = [0u8; 33];
+        out[0] = 0x00;
+        out[1..].copy_from_slice(&public_key.to_bytes());
+        Ok(out)
     }
 
-    #[cfg(any(feature = "crypto-rs", feature = "crypto-psa"))]
+    #[cfg(feature = "crypto-psa")]
     pub fn export_pk(secret: &[u8]) -> Result<[u8; 33]> {
-        #[cfg(feature = "crypto-rs")]
-        {
-            if secret.len() != 32 {
-                return Err(anyhow!(
-                    "Invalid secret length: expected 32, got {}",
-                    secret.len()
-                ));
-            }
-
-            let mut secret_key = [0u8; 32];
-            secret_key.copy_from_slice(secret);
-
-            secret_key[0] &= 248;
-            secret_key[31] &= 127;
-            secret_key[31] |= 64;
-
-            let x25519_secret = X25519Secret::from(secret_key);
-            let public_key = X25519PublicKey::from(&x25519_secret);
-
-            let mut out = [0u8; 33];
-            out[0] = 0x00;
-            out[1..].copy_from_slice(&public_key.to_bytes());
-            Ok(out)
+        if secret.len() != 32 {
+            bail!("Invalid secret length: {}", secret.len());
         }
-        #[cfg(feature = "crypto-psa")]
-        {
-            if secret.len() != 32 {
-                bail!("Invalid secret length: {}", secret.len());
-            }
-            #[allow(unused_imports)]
-            use crate::alg::bindings;
-            let mut out = [0u8; 33];
-            let status = unsafe {
-                bindings::psa_x25519_export_pk_from_secret(secret.as_ptr(), out.as_mut_ptr())
-            };
-            if status == 0 {
-                Ok(out)
-            } else {
-                anyhow::bail!("{}", status)
-            }
+        let mut out = [0u8; 33];
+        let status = unsafe {
+            bindings::psa_x25519_export_pk_from_secret(secret.as_ptr(), out.as_mut_ptr())
+        };
+        if status == 0 {
+            Ok(out)
+        } else {
+            anyhow::bail!("{}", status)
         }
     }
 }
@@ -456,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn test_k256_get_pk() {
+    fn test_k256_export_pk() {
         let sk = hex::decode("0bc0bb17546bea74ce589ce21caae32ae3302f1fdda1c370fcb381c8155d536c")
             .unwrap();
 
@@ -475,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ed25519_sign() {
+    fn test_ed25519_sign_1() {
         let sk = hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
             .unwrap();
         let msg = b"test message";
@@ -485,7 +436,17 @@ mod tests {
     }
 
     #[test]
-    fn test_ed25519_get_pk() {
+    fn test_ed25519_sign_2() {
+        let sk = hex::decode("F0B6D86308082BB3DA1CA59D854B729D456956F0486D836F28375747E07BB313")
+            .unwrap();
+        let msg = b"test message";
+        let sig = Ed25519::sign(&sk, msg).unwrap();
+        let expected_sig = hex::decode("719EF9587A385004EAB84F913F2FD0D1F1BE6C239C7AEB4719F0CD98E27230B0B82A8306518D3FF87DFD1AD3295CCBF0D696EE150E31AC0EC335198049E2B20B").unwrap();
+        assert_eq!(sig.as_slice(), expected_sig.as_slice());
+    }
+
+    #[test]
+    fn test_ed25519_export_pk_1() {
         let sk = hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
             .unwrap();
 
@@ -498,24 +459,24 @@ mod tests {
         assert_eq!(pk, pk_hex.as_slice());
     }
 
-    #[test]
-    fn test_ed25519_tweak_key() {
-        let sk = hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+    fn test_ed25519_export_pk_2() {
+        let sk = hex::decode("F0B6D86308082BB3DA1CA59D854B729D456956F0486D836F28375747E07BB313")
             .unwrap();
-        let tweak = hex::decode("1111111111111111111111111111111111111111111111111111111111111111")
-            .unwrap();
-        let tweaked = Ed25519::tweak_key(&sk, &tweak).unwrap();
-        let expected =
-            hex::decode("ae72c2ae000e6b71cb955b05a3fd3dd5555ad67a8c437a2a814cbd142dbf9071")
+
+        let sk_array: [u8; 32] = sk.try_into().unwrap();
+        let pk = Ed25519::export_pk(&sk_array).unwrap();
+
+        let pk_hex =
+            hex::decode("00E27B7031ECE5E0339C113E699C89E9D0A2BE80D243C7DE31DF58DD4B4BCA4AB2")
                 .unwrap();
-        assert_eq!(tweaked, expected.as_slice());
+        assert_eq!(pk, pk_hex.as_slice());
     }
 
     #[test]
-    fn test_x25519_export_pk() {
+    fn test_curve25519_export_pk_1() {
         let sk = hex::decode("e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35")
             .unwrap();
-        let pk = X25519::export_pk(&sk).unwrap();
+        let pk = Curve25519::export_pk(&sk).unwrap();
 
         let expected_pk =
             hex::decode("00bcb1a123e0742b56b07e0b06c8106bef137131ace91585f0eee4949447661c15")
@@ -525,15 +486,15 @@ mod tests {
     }
 
     #[test]
-    fn test_x25519_tweak_key() {
-        let sk = hex::decode("a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3")
+    fn test_curve25519_export_pk2() {
+        let sk = hex::decode("97b14c6bd6450311534a9328f1e5bf89765091deed9cd96c237d8647ea43b802")
             .unwrap();
-        let tweak = hex::decode("1111111111111111111111111111111111111111111111111111111111111111")
-            .unwrap();
-        let tweaked = X25519::tweak_key(&sk, &tweak).unwrap();
-        let expected =
-            hex::decode("d00b4ef8a5842c85c35ed7ebf4495090b05b30501031b18faa9f970809b48b44")
+        let pk = Curve25519::export_pk(&sk).unwrap();
+
+        let expected_pk =
+            hex::decode("000d5370958169e757a1da954c513086f23cebad1d2ed9521775c7935e612b4358")
                 .unwrap();
-        assert_eq!(tweaked, expected.as_slice());
+
+        assert_eq!(pk.as_slice(), expected_pk.as_slice());
     }
 }

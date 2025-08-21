@@ -424,7 +424,6 @@ dependencies = [
  "bit-vec",
  "bs58",
  "cmake",
- "curve25519-dalek",
  "ed25519-dalek",
  "heapless",
  "hex",
