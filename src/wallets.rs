@@ -1,7 +1,5 @@
-use core::{str, str::FromStr};
-
 use anyhow::{anyhow, Result};
-use heapless::{String, Vec};
+use heapless::Vec;
 
 use crate::alg::crypto::{Curve25519, Ed25519, Hash, HMAC, K256};
 use crate::path::{ChildNumber, DerivationPath};
@@ -188,8 +186,8 @@ impl ExtendedPrivKey {
             _ => unreachable!(),
         };
 
-        let pub_key =
-            Vec::<u8, 33>::from_slice(pub_key_slice).expect("Public key fits in Vec<u8, 33>");
+        let pub_key: Vec<u8, 33> =
+            Vec::from_slice(pub_key_slice).expect("Public key fits in Vec<u8, 33>");
 
         let hash = Hash::hash160(&pub_key)?;
 
@@ -198,61 +196,14 @@ impl ExtendedPrivKey {
 
         Ok(fingerprint)
     }
-
-    pub fn encode(&self, is_public: bool) -> Result<String<256>> {
-        let mut data = ByteVec::<128>::new();
-
-        // 1. version
-        data.extend(&self.curve.version_bytes(is_public))?;
-
-        // 2. depth
-        data.push(self.depth)?;
-
-        // 3. parent fingerprint
-        data.extend(&self.parent_fingerprint)?;
-
-        // 4. child number
-        data.extend(&self.child_number.to_bytes())?;
-
-        // 5. chain code
-        data.extend(&self.chain_code)?;
-
-        // 6. key data
-        if is_public {
-            let pub_key: &[u8] = match self.curve {
-                Curve::K256 => &K256::export_pk_compressed(&self.secret_key)?[..],
-                Curve::Ed25519 => &Ed25519::export_pk(&self.secret_key)?[..],
-                Curve::Curve25519 => &Curve25519::export_pk(&self.secret_key)?[..],
-                _ => unreachable!(),
-            };
-            data.extend(pub_key)?;
-        } else {
-            match self.curve {
-                Curve::K256 | Curve::P256 => {
-                    data.push(0)?;
-                    data.extend(&self.secret_key)?;
-                }
-                Curve::Ed25519 | Curve::Curve25519 => {
-                    data.extend(&self.secret_key)?;
-                }
-            }
-        }
-
-        // 7. Base58Check
-        let mut base58 = [0u8; 256];
-        let len = bs58::encode(&data.clone().into_vec())
-            .with_check()
-            .onto(&mut base58[..])
-            .map_err(|e| anyhow!(e))?;
-
-        Ok(String::from_str(str::from_utf8(&base58[..len])?).map_err(|_| anyhow!("utf8"))?)
-    }
 }
 
 #[cfg(test)]
 mod test {
     extern crate alloc;
     use alloc::{vec, vec::Vec};
+    use core::{str, str::FromStr};
+    use heapless::String;
 
     use super::*;
 
@@ -539,8 +490,8 @@ mod test {
             let child = ExtendedPrivKey::derive(&seed, path, curve)?;
 
             if case[2].starts_with("xprv") || case[2].starts_with("xpub") {
-                assert_eq!(child.encode(false)?, case[2]);
-                assert_eq!(child.encode(true)?, case[3]);
+                assert_eq!(run_test_build_encode(&child, false)?, case[2]);
+                assert_eq!(run_test_build_encode(&child, true)?, case[3]);
             } else {
                 assert_eq!(hex::encode(child.secret_key), case[2]);
                 let pk = child.export_pk()?;
@@ -548,6 +499,51 @@ mod test {
             }
         }
         Ok(())
+    }
+
+    fn run_test_build_encode(s: &ExtendedPrivKey, is_public: bool) -> Result<String<256>> {
+        let mut data = ByteVec::<128>::new();
+
+        // 1. version
+        data.extend(&s.curve.version_bytes(is_public))?;
+
+        // 2. depth
+        data.push(s.depth)?;
+
+        // 3. parent fingerprint
+        data.extend(&s.parent_fingerprint)?;
+
+        // 4. child number
+        data.extend(&s.child_number.to_bytes())?;
+
+        // 5. chain code
+        data.extend(&s.chain_code)?;
+
+        // 6. key data
+        if is_public {
+            let pub_key: &[u8] = match s.curve {
+                Curve::K256 => &K256::export_pk_compressed(&s.secret_key)?[..],
+                _ => unreachable!(),
+            };
+            data.extend(pub_key)?;
+        } else {
+            match s.curve {
+                Curve::K256 => {
+                    data.push(0)?;
+                    data.extend(&s.secret_key)?;
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        // 7. Base58Check
+        let mut base58 = [0u8; 256];
+        let len = bs58::encode(&data.clone().into_vec())
+            .with_check()
+            .onto(&mut base58[..])
+            .map_err(|e| anyhow!(e))?;
+
+        Ok(String::from_str(str::from_utf8(&base58[..len])?).map_err(|_| anyhow!("utf8"))?)
     }
 
     #[test]
