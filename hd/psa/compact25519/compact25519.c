@@ -27,7 +27,7 @@
  * Elements received from the outside may greater even than 2p.
  * f25519_normalize() will correctly deal with these numbers too.
  */
-#define F25519_SIZE  32
+#define F25519_SIZE 32
 
 /* Identity constants */
 #ifdef FULL_C25519_CODE
@@ -56,9 +56,8 @@ static COMPACT_25519_DECL uint8_t f25519_eq(const uint8_t *x, const uint8_t *y);
  * condition == 1, then one is copied to dst. Any other value results in
  * undefined behaviour.
  */
-static COMPACT_25519_DECL void f25519_select(uint8_t *dst,
-		   const uint8_t *zero, const uint8_t *one,
-		   uint8_t condition);
+static COMPACT_25519_DECL void f25519_select(uint8_t *dst, const uint8_t *zero, const uint8_t *one,
+					     uint8_t condition);
 
 /* Add/subtract two field points. The three pointers are not required to
  * be distinct.
@@ -123,7 +122,7 @@ static COMPACT_25519_DECL void f25519_sqrt(uint8_t *r, const uint8_t *x);
  *
  * The modulus is a number p, such that 2p-1 fits in FPRIME_SIZE bytes.
  */
-#define FPRIME_SIZE  32
+#define FPRIME_SIZE 32
 
 #ifdef FULL_C25519_CODE
 /* Useful constants */
@@ -137,9 +136,8 @@ static COMPACT_25519_DECL void fprime_load(uint8_t *x, uint32_t c);
 #endif
 
 /* Load a large constant */
-static COMPACT_25519_DECL void fprime_from_bytes(uint8_t *n,
-		       const uint8_t *x, size_t len,
-		       const uint8_t *modulus);
+static COMPACT_25519_DECL void fprime_from_bytes(uint8_t *n, const uint8_t *x, size_t len,
+						 const uint8_t *modulus);
 
 /* Copy an element */
 static COMPACT_25519_DECL inline void fprime_copy(uint8_t *x, const uint8_t *a)
@@ -161,9 +159,8 @@ static COMPACT_25519_DECL uint8_t fprime_eq(const uint8_t *x, const uint8_t *y);
  * condition == 1, then one is copied to dst. Any other value results in
  * undefined behaviour.
  */
-static COMPACT_25519_DECL void fprime_select(uint8_t *dst,
-		   const uint8_t *zero, const uint8_t *one,
-		   uint8_t condition);
+static COMPACT_25519_DECL void fprime_select(uint8_t *dst, const uint8_t *zero, const uint8_t *one,
+					     uint8_t condition);
 
 /* Add one value to another. The two pointers must be distinct. */
 static COMPACT_25519_DECL void fprime_add(uint8_t *r, const uint8_t *a, const uint8_t *modulus);
@@ -173,7 +170,7 @@ static COMPACT_25519_DECL void fprime_sub(uint8_t *r, const uint8_t *a, const ui
 
 /* Multiply two values to get a third. r must be distinct from a and b */
 static COMPACT_25519_DECL void fprime_mul(uint8_t *r, const uint8_t *a, const uint8_t *b,
-		const uint8_t *modulus);
+					  const uint8_t *modulus);
 
 #ifdef FULL_C25519_CODE
 /* Compute multiplicative inverse. r must be distinct from a */
@@ -200,7 +197,7 @@ static COMPACT_25519_DECL void fprime_inv(uint8_t *r, const uint8_t *a, const ui
  * partial block.
  */
 struct sha512_state {
-	uint64_t  h[8];
+	uint64_t h[8];
 };
 
 /* Initial state */
@@ -213,7 +210,7 @@ static COMPACT_25519_DECL inline void sha512_init(struct sha512_state *s)
 }
 
 /* Feed a full block in */
-#define SHA512_BLOCK_SIZE  128
+#define SHA512_BLOCK_SIZE 128
 
 static COMPACT_25519_DECL void sha512_block(struct sha512_state *s, const uint8_t *blk);
 
@@ -223,13 +220,13 @@ static COMPACT_25519_DECL void sha512_block(struct sha512_state *s, const uint8_
  * this function to terminate the stream.
  */
 static COMPACT_25519_DECL void sha512_final(struct sha512_state *s, const uint8_t *blk,
-		  size_t total_size);
+					    size_t total_size);
 
 /* Fetch a slice of the hash result. */
-#define SHA512_HASH_SIZE  64
+#define SHA512_HASH_SIZE 64
 
 static COMPACT_25519_DECL void sha512_get(const struct sha512_state *s, uint8_t *hash,
-		unsigned int offset, unsigned int len);
+					  unsigned int offset, unsigned int len);
 
 #endif
 // ******* END:   c25519/sha512.h ********
@@ -256,7 +253,7 @@ static COMPACT_25519_DECL void sha512_get(const struct sha512_state *s, uint8_t 
  */
 
 /* This is the site of a Curve25519 exponent (private key) */
-#define C25519_EXPONENT_SIZE  32
+#define C25519_EXPONENT_SIZE 32
 
 /* Having generated 32 random bytes, you should call this function to
  * finalize the generated key.
@@ -309,33 +306,33 @@ static COMPACT_25519_DECL void c25519_smult(uint8_t *result, const uint8_t *q, c
 
 /* Projective coordinates */
 struct ed25519_pt {
-	uint8_t  x[F25519_SIZE];
-	uint8_t  y[F25519_SIZE];
-	uint8_t  t[F25519_SIZE];
-	uint8_t  z[F25519_SIZE];
+	uint8_t x[F25519_SIZE];
+	uint8_t y[F25519_SIZE];
+	uint8_t t[F25519_SIZE];
+	uint8_t z[F25519_SIZE];
 };
 
 COMPACT_25519_DECL extern const struct ed25519_pt ed25519_base;
 COMPACT_25519_DECL extern const struct ed25519_pt ed25519_neutral;
 
 /* Convert between projective and affine coordinates (x/y in F25519) */
-static COMPACT_25519_DECL void ed25519_project(struct ed25519_pt *p,
-		     const uint8_t *x, const uint8_t *y);
+static COMPACT_25519_DECL void ed25519_project(struct ed25519_pt *p, const uint8_t *x,
+					       const uint8_t *y);
 
 static COMPACT_25519_DECL void ed25519_unproject(uint8_t *x, uint8_t *y,
-		       const struct ed25519_pt *p);
+						 const struct ed25519_pt *p);
 
 /* Compress/uncompress points. try_unpack() will check that the
  * compressed point is on the curve, returning 1 if the unpacked point
  * is valid, and 0 otherwise.
  */
-#define ED25519_PACK_SIZE  F25519_SIZE
+#define ED25519_PACK_SIZE F25519_SIZE
 
 static COMPACT_25519_DECL void ed25519_pack(uint8_t *c, const uint8_t *x, const uint8_t *y);
 static COMPACT_25519_DECL uint8_t ed25519_try_unpack(uint8_t *x, uint8_t *y, const uint8_t *c);
 
 /* Add, double and scalar multiply */
-#define ED25519_EXPONENT_SIZE  32
+#define ED25519_EXPONENT_SIZE 32
 
 /* Prepare an exponent by clamping appropriate bits */
 static COMPACT_25519_DECL inline void ed25519_prepare(uint8_t *e)
@@ -347,16 +344,16 @@ static COMPACT_25519_DECL inline void ed25519_prepare(uint8_t *e)
 
 /* Order of the group generated by the base point */
 static COMPACT_25519_DECL inline void ed25519_copy(struct ed25519_pt *dst,
-				const struct ed25519_pt *src)
+						   const struct ed25519_pt *src)
 {
 	memcpy(dst, src, sizeof(*dst));
 }
 
-static COMPACT_25519_DECL void ed25519_add(struct ed25519_pt *r,
-		 const struct ed25519_pt *a, const struct ed25519_pt *b);
+static COMPACT_25519_DECL void ed25519_add(struct ed25519_pt *r, const struct ed25519_pt *a,
+					   const struct ed25519_pt *b);
 static COMPACT_25519_DECL void ed25519_double(struct ed25519_pt *r, const struct ed25519_pt *a);
 static COMPACT_25519_DECL void ed25519_smult(struct ed25519_pt *r, const struct ed25519_pt *a,
-		   const uint8_t *e);
+					     const uint8_t *e);
 
 #endif
 // ******* END:   c25519/ed25519.h ********
@@ -389,25 +386,25 @@ static COMPACT_25519_DECL void ed25519_smult(struct ed25519_pt *r, const struct 
  * clamping of bits, because we don't use the key directly as an
  * exponent (the exponent is derived from part of a key expansion).
  */
-#define EDSIGN_SECRET_KEY_SIZE  32
+#define EDSIGN_SECRET_KEY_SIZE 32
 
 /* Given a secret key, produce the public key (a packed Edwards-curve
  * point).
  */
-#define EDSIGN_PUBLIC_KEY_SIZE  32
+#define EDSIGN_PUBLIC_KEY_SIZE 32
 
 static COMPACT_25519_DECL void edsign_sec_to_pub(uint8_t *pub, const uint8_t *secret);
 
 /* Produce a signature for a message. */
-#define EDSIGN_SIGNATURE_SIZE  64
+#define EDSIGN_SIGNATURE_SIZE 64
 
 static COMPACT_25519_DECL void edsign_sign(uint8_t *signature, const uint8_t *pub,
-		 const uint8_t *secret,
-		 const uint8_t *message, size_t len);
+					   const uint8_t *secret, const uint8_t *message,
+					   size_t len);
 
 /* Verify a message signature. Returns non-zero if ok. */
 static COMPACT_25519_DECL uint8_t edsign_verify(const uint8_t *signature, const uint8_t *pub,
-		      const uint8_t *message, size_t len);
+						const uint8_t *message, size_t len);
 
 #endif
 // ******* END:   c25519/edsign.h ********
@@ -432,8 +429,9 @@ static COMPACT_25519_DECL void f25519_load(uint8_t *x, uint32_t c)
 		c >>= 8;
 	}
 
-	for (; i < F25519_SIZE; i++)
+	for (; i < F25519_SIZE; i++) {
 		x[i] = 0;
+	}
 }
 
 static COMPACT_25519_DECL void f25519_normalize(uint8_t *x)
@@ -476,8 +474,9 @@ static COMPACT_25519_DECL uint8_t f25519_eq(const uint8_t *x, const uint8_t *y)
 	uint8_t sum = 0;
 	int i;
 
-	for (i = 0; i < F25519_SIZE; i++)
+	for (i = 0; i < F25519_SIZE; i++) {
 		sum |= x[i] ^ y[i];
+	}
 
 	sum |= (sum >> 4);
 	sum |= (sum >> 2);
@@ -486,15 +485,15 @@ static COMPACT_25519_DECL uint8_t f25519_eq(const uint8_t *x, const uint8_t *y)
 	return (sum ^ 1) & 1;
 }
 
-static COMPACT_25519_DECL void f25519_select(uint8_t *dst,
-		   const uint8_t *zero, const uint8_t *one,
-		   uint8_t condition)
+static COMPACT_25519_DECL void f25519_select(uint8_t *dst, const uint8_t *zero, const uint8_t *one,
+					     uint8_t condition)
 {
 	const uint8_t mask = -condition;
 	int i;
 
-	for (i = 0; i < F25519_SIZE; i++)
+	for (i = 0; i < F25519_SIZE; i++) {
 		dst[i] = zero[i] ^ (mask & (one[i] ^ zero[i]));
+	}
 }
 
 static COMPACT_25519_DECL void f25519_add(uint8_t *r, const uint8_t *a, const uint8_t *b)
@@ -577,12 +576,13 @@ static COMPACT_25519_DECL void f25519_mul__distinct(uint8_t *r, const uint8_t *a
 		int j;
 
 		c >>= 8;
-		for (j = 0; j <= i; j++)
+		for (j = 0; j <= i; j++) {
 			c += ((uint32_t)a[j]) * ((uint32_t)b[i - j]);
+		}
 
-		for (; j < F25519_SIZE; j++)
-			c += ((uint32_t)a[j]) *
-			     ((uint32_t)b[i + F25519_SIZE - j]) * 38;
+		for (; j < F25519_SIZE; j++) {
+			c += ((uint32_t)a[j]) * ((uint32_t)b[i + F25519_SIZE - j]) * 38;
+		}
 
 		r[i] = c;
 	}
@@ -787,9 +787,11 @@ static COMPACT_25519_DECL int prime_msb(const uint8_t *p)
 	int i;
 	uint8_t x;
 
-	for (i = FPRIME_SIZE - 1; i >= 0; i--)
-		if (p[i])
+	for (i = FPRIME_SIZE - 1; i >= 0; i--) {
+		if (p[i]) {
 			break;
+		}
+	}
 
 	x = p[i];
 	i <<= 3;
@@ -825,8 +827,9 @@ static COMPACT_25519_DECL void fprime_load(uint8_t *x, uint32_t c)
 		c >>= 8;
 	}
 
-	for (; i < FPRIME_SIZE; i++)
+	for (; i < FPRIME_SIZE; i++) {
 		x[i] = 0;
+	}
 }
 #endif
 
@@ -835,9 +838,8 @@ static COMPACT_25519_DECL inline int min_int(int a, int b)
 	return a < b ? a : b;
 }
 
-static COMPACT_25519_DECL void fprime_from_bytes(uint8_t *n,
-		       const uint8_t *x, size_t len,
-		       const uint8_t *modulus)
+static COMPACT_25519_DECL void fprime_from_bytes(uint8_t *n, const uint8_t *x, size_t len,
+						 const uint8_t *modulus)
 {
 	const int preload_total = min_int(prime_msb(modulus) - 1, len << 3);
 	const int preload_bytes = preload_total >> 3;
@@ -847,8 +849,9 @@ static COMPACT_25519_DECL void fprime_from_bytes(uint8_t *n,
 
 	memset(n, 0, FPRIME_SIZE);
 
-	for (i = 0; i < preload_bytes; i++)
+	for (i = 0; i < preload_bytes; i++) {
 		n[i] = x[len - preload_bytes + i];
+	}
 
 	if (preload_bits) {
 		shift_n_bits(n, preload_bits);
@@ -878,8 +881,9 @@ static COMPACT_25519_DECL uint8_t fprime_eq(const uint8_t *x, const uint8_t *y)
 	uint8_t sum = 0;
 	int i;
 
-	for (i = 0; i < FPRIME_SIZE; i++)
+	for (i = 0; i < FPRIME_SIZE; i++) {
 		sum |= x[i] ^ y[i];
+	}
 
 	sum |= (sum >> 4);
 	sum |= (sum >> 2);
@@ -888,15 +892,15 @@ static COMPACT_25519_DECL uint8_t fprime_eq(const uint8_t *x, const uint8_t *y)
 	return (sum ^ 1) & 1;
 }
 #endif
-static COMPACT_25519_DECL void fprime_select(uint8_t *dst,
-		   const uint8_t *zero, const uint8_t *one,
-		   uint8_t condition)
+static COMPACT_25519_DECL void fprime_select(uint8_t *dst, const uint8_t *zero, const uint8_t *one,
+					     uint8_t condition)
 {
 	const uint8_t mask = -condition;
 	int i;
 
-	for (i = 0; i < FPRIME_SIZE; i++)
+	for (i = 0; i < FPRIME_SIZE; i++) {
 		dst[i] = zero[i] ^ (mask & (one[i] ^ zero[i]));
+	}
 }
 
 static COMPACT_25519_DECL void fprime_add(uint8_t *r, const uint8_t *a, const uint8_t *modulus)
@@ -915,7 +919,7 @@ static COMPACT_25519_DECL void fprime_sub(uint8_t *r, const uint8_t *a, const ui
 #endif
 
 static COMPACT_25519_DECL void fprime_mul(uint8_t *r, const uint8_t *a, const uint8_t *b,
-		const uint8_t *modulus)
+					  const uint8_t *modulus)
 {
 	int i;
 
@@ -958,10 +962,11 @@ static COMPACT_25519_DECL void fprime_inv(uint8_t *r, const uint8_t *a, const ui
 
 		fprime_mul(r2, r, r, modulus);
 
-		if ((pm2[i >> 3] >> (i & 7)) & 1)
+		if ((pm2[i >> 3] >> (i & 7)) & 1) {
 			fprime_mul(r, r2, a, modulus);
-		else
+		} else {
 			fprime_copy(r, r2);
+		}
 	}
 }
 #endif
@@ -975,54 +980,38 @@ static COMPACT_25519_DECL void fprime_inv(uint8_t *r, const uint8_t *a, const ui
  */
 
 #if !defined(COMPACT_DISABLE_ED25519) || !defined(COMPACT_DISABLE_X25519_DERIVE)
-COMPACT_25519_DECL const struct sha512_state sha512_initial_state = { {
-	0x6a09e667f3bcc908LL, 0xbb67ae8584caa73bLL,
-	0x3c6ef372fe94f82bLL, 0xa54ff53a5f1d36f1LL,
-	0x510e527fade682d1LL, 0x9b05688c2b3e6c1fLL,
-	0x1f83d9abfb41bd6bLL, 0x5be0cd19137e2179LL,
-} };
+COMPACT_25519_DECL const struct sha512_state sha512_initial_state = {{
+	0x6a09e667f3bcc908LL,
+	0xbb67ae8584caa73bLL,
+	0x3c6ef372fe94f82bLL,
+	0xa54ff53a5f1d36f1LL,
+	0x510e527fade682d1LL,
+	0x9b05688c2b3e6c1fLL,
+	0x1f83d9abfb41bd6bLL,
+	0x5be0cd19137e2179LL,
+}};
 
 COMPACT_25519_DECL const uint64_t round_k[80] = {
-	0x428a2f98d728ae22LL, 0x7137449123ef65cdLL,
-	0xb5c0fbcfec4d3b2fLL, 0xe9b5dba58189dbbcLL,
-	0x3956c25bf348b538LL, 0x59f111f1b605d019LL,
-	0x923f82a4af194f9bLL, 0xab1c5ed5da6d8118LL,
-	0xd807aa98a3030242LL, 0x12835b0145706fbeLL,
-	0x243185be4ee4b28cLL, 0x550c7dc3d5ffb4e2LL,
-	0x72be5d74f27b896fLL, 0x80deb1fe3b1696b1LL,
-	0x9bdc06a725c71235LL, 0xc19bf174cf692694LL,
-	0xe49b69c19ef14ad2LL, 0xefbe4786384f25e3LL,
-	0x0fc19dc68b8cd5b5LL, 0x240ca1cc77ac9c65LL,
-	0x2de92c6f592b0275LL, 0x4a7484aa6ea6e483LL,
-	0x5cb0a9dcbd41fbd4LL, 0x76f988da831153b5LL,
-	0x983e5152ee66dfabLL, 0xa831c66d2db43210LL,
-	0xb00327c898fb213fLL, 0xbf597fc7beef0ee4LL,
-	0xc6e00bf33da88fc2LL, 0xd5a79147930aa725LL,
-	0x06ca6351e003826fLL, 0x142929670a0e6e70LL,
-	0x27b70a8546d22ffcLL, 0x2e1b21385c26c926LL,
-	0x4d2c6dfc5ac42aedLL, 0x53380d139d95b3dfLL,
-	0x650a73548baf63deLL, 0x766a0abb3c77b2a8LL,
-	0x81c2c92e47edaee6LL, 0x92722c851482353bLL,
-	0xa2bfe8a14cf10364LL, 0xa81a664bbc423001LL,
-	0xc24b8b70d0f89791LL, 0xc76c51a30654be30LL,
-	0xd192e819d6ef5218LL, 0xd69906245565a910LL,
-	0xf40e35855771202aLL, 0x106aa07032bbd1b8LL,
-	0x19a4c116b8d2d0c8LL, 0x1e376c085141ab53LL,
-	0x2748774cdf8eeb99LL, 0x34b0bcb5e19b48a8LL,
-	0x391c0cb3c5c95a63LL, 0x4ed8aa4ae3418acbLL,
-	0x5b9cca4f7763e373LL, 0x682e6ff3d6b2b8a3LL,
-	0x748f82ee5defb2fcLL, 0x78a5636f43172f60LL,
-	0x84c87814a1f0ab72LL, 0x8cc702081a6439ecLL,
-	0x90befffa23631e28LL, 0xa4506cebde82bde9LL,
-	0xbef9a3f7b2c67915LL, 0xc67178f2e372532bLL,
-	0xca273eceea26619cLL, 0xd186b8c721c0c207LL,
-	0xeada7dd6cde0eb1eLL, 0xf57d4f7fee6ed178LL,
-	0x06f067aa72176fbaLL, 0x0a637dc5a2c898a6LL,
-	0x113f9804bef90daeLL, 0x1b710b35131c471bLL,
-	0x28db77f523047d84LL, 0x32caab7b40c72493LL,
-	0x3c9ebe0a15c9bebcLL, 0x431d67c49c100d4cLL,
-	0x4cc5d4becb3e42b6LL, 0x597f299cfc657e2aLL,
-	0x5fcb6fab3ad6faecLL, 0x6c44198c4a475817LL,
+	0x428a2f98d728ae22LL, 0x7137449123ef65cdLL, 0xb5c0fbcfec4d3b2fLL, 0xe9b5dba58189dbbcLL,
+	0x3956c25bf348b538LL, 0x59f111f1b605d019LL, 0x923f82a4af194f9bLL, 0xab1c5ed5da6d8118LL,
+	0xd807aa98a3030242LL, 0x12835b0145706fbeLL, 0x243185be4ee4b28cLL, 0x550c7dc3d5ffb4e2LL,
+	0x72be5d74f27b896fLL, 0x80deb1fe3b1696b1LL, 0x9bdc06a725c71235LL, 0xc19bf174cf692694LL,
+	0xe49b69c19ef14ad2LL, 0xefbe4786384f25e3LL, 0x0fc19dc68b8cd5b5LL, 0x240ca1cc77ac9c65LL,
+	0x2de92c6f592b0275LL, 0x4a7484aa6ea6e483LL, 0x5cb0a9dcbd41fbd4LL, 0x76f988da831153b5LL,
+	0x983e5152ee66dfabLL, 0xa831c66d2db43210LL, 0xb00327c898fb213fLL, 0xbf597fc7beef0ee4LL,
+	0xc6e00bf33da88fc2LL, 0xd5a79147930aa725LL, 0x06ca6351e003826fLL, 0x142929670a0e6e70LL,
+	0x27b70a8546d22ffcLL, 0x2e1b21385c26c926LL, 0x4d2c6dfc5ac42aedLL, 0x53380d139d95b3dfLL,
+	0x650a73548baf63deLL, 0x766a0abb3c77b2a8LL, 0x81c2c92e47edaee6LL, 0x92722c851482353bLL,
+	0xa2bfe8a14cf10364LL, 0xa81a664bbc423001LL, 0xc24b8b70d0f89791LL, 0xc76c51a30654be30LL,
+	0xd192e819d6ef5218LL, 0xd69906245565a910LL, 0xf40e35855771202aLL, 0x106aa07032bbd1b8LL,
+	0x19a4c116b8d2d0c8LL, 0x1e376c085141ab53LL, 0x2748774cdf8eeb99LL, 0x34b0bcb5e19b48a8LL,
+	0x391c0cb3c5c95a63LL, 0x4ed8aa4ae3418acbLL, 0x5b9cca4f7763e373LL, 0x682e6ff3d6b2b8a3LL,
+	0x748f82ee5defb2fcLL, 0x78a5636f43172f60LL, 0x84c87814a1f0ab72LL, 0x8cc702081a6439ecLL,
+	0x90befffa23631e28LL, 0xa4506cebde82bde9LL, 0xbef9a3f7b2c67915LL, 0xc67178f2e372532bLL,
+	0xca273eceea26619cLL, 0xd186b8c721c0c207LL, 0xeada7dd6cde0eb1eLL, 0xf57d4f7fee6ed178LL,
+	0x06f067aa72176fbaLL, 0x0a637dc5a2c898a6LL, 0x113f9804bef90daeLL, 0x1b710b35131c471bLL,
+	0x28db77f523047d84LL, 0x32caab7b40c72493LL, 0x3c9ebe0a15c9bebcLL, 0x431d67c49c100d4cLL,
+	0x4cc5d4becb3e42b6LL, 0x597f299cfc657e2aLL, 0x5fcb6fab3ad6faecLL, 0x6c44198c4a475817LL,
 };
 
 static COMPACT_25519_DECL inline uint64_t load64(const uint8_t *x)
@@ -1093,10 +1082,8 @@ static COMPACT_25519_DECL void sha512_block(struct sha512_state *s, const uint8_
 		const uint64_t wi15 = w[(i + 1) & 15];
 		const uint64_t wi2 = w[(i + 14) & 15];
 		const uint64_t wi7 = w[(i + 9) & 15];
-		const uint64_t s0 =
-			rot64(wi15, 1) ^ rot64(wi15, 8) ^ (wi15 >> 7);
-		const uint64_t s1 =
-			rot64(wi2, 19) ^ rot64(wi2, 61) ^ (wi2 >> 6);
+		const uint64_t s0 = rot64(wi15, 1) ^ rot64(wi15, 8) ^ (wi15 >> 7);
+		const uint64_t s1 = rot64(wi2, 19) ^ rot64(wi2, 61) ^ (wi2 >> 6);
 
 		/* Round calculations */
 		const uint64_t S0 = rot64(a, 28) ^ rot64(a, 34) ^ rot64(a, 39);
@@ -1132,13 +1119,14 @@ static COMPACT_25519_DECL void sha512_block(struct sha512_state *s, const uint8_
 }
 
 static COMPACT_25519_DECL void sha512_final(struct sha512_state *s, const uint8_t *blk,
-		  size_t total_size)
+					    size_t total_size)
 {
 	uint8_t temp[SHA512_BLOCK_SIZE] = {0};
 	const size_t last_size = total_size & (SHA512_BLOCK_SIZE - 1);
 
-	if (last_size)
+	if (last_size) {
 		memcpy(temp, blk, last_size);
+	}
 	temp[last_size] = 0x80;
 
 	if (last_size > 111) {
@@ -1152,15 +1140,17 @@ static COMPACT_25519_DECL void sha512_final(struct sha512_state *s, const uint8_
 }
 
 static COMPACT_25519_DECL void sha512_get(const struct sha512_state *s, uint8_t *hash,
-		unsigned int offset, unsigned int len)
+					  unsigned int offset, unsigned int len)
 {
 	int i;
 
-	if (offset > SHA512_BLOCK_SIZE)
+	if (offset > SHA512_BLOCK_SIZE) {
 		return;
+	}
 
-	if (len > SHA512_BLOCK_SIZE - offset)
+	if (len > SHA512_BLOCK_SIZE - offset) {
 		len = SHA512_BLOCK_SIZE - offset;
+	}
 
 	/* Skip whole words */
 	i = offset >> 3;
@@ -1171,8 +1161,9 @@ static COMPACT_25519_DECL void sha512_get(const struct sha512_state *s, uint8_t 
 		uint8_t tmp[8];
 		unsigned int c = 8 - offset;
 
-		if (c > len)
+		if (c > len) {
 			c = len;
+		}
 
 		store64(tmp, s->h[i++]);
 		memcpy(hash, tmp + offset, c);
@@ -1208,8 +1199,8 @@ static COMPACT_25519_DECL void sha512_get(const struct sha512_state *s, uint8_t 
 COMPACT_25519_DECL const uint8_t c25519_base_x[F25519_SIZE] = {9};
 
 /* Double an X-coordinate */
-static COMPACT_25519_DECL void xc_double(uint8_t *x3, uint8_t *z3,
-		      const uint8_t *x1, const uint8_t *z1)
+static COMPACT_25519_DECL void xc_double(uint8_t *x3, uint8_t *z3, const uint8_t *x1,
+					 const uint8_t *z1)
 {
 	/* Explicit formulas database: dbl-1987-m
 	 *
@@ -1238,10 +1229,9 @@ static COMPACT_25519_DECL void xc_double(uint8_t *x3, uint8_t *z3,
 }
 
 /* Differential addition */
-static COMPACT_25519_DECL void xc_diffadd(uint8_t *x5, uint8_t *z5,
-		       const uint8_t *x1, const uint8_t *z1,
-		       const uint8_t *x2, const uint8_t *z2,
-		       const uint8_t *x3, const uint8_t *z3)
+static COMPACT_25519_DECL void xc_diffadd(uint8_t *x5, uint8_t *z5, const uint8_t *x1,
+					  const uint8_t *z1, const uint8_t *x2, const uint8_t *z2,
+					  const uint8_t *x3, const uint8_t *z3)
 {
 	/* Explicit formulas database: dbl-1987-m3
 	 *
@@ -1344,37 +1334,23 @@ static COMPACT_25519_DECL void c25519_smult(uint8_t *result, const uint8_t *q, c
  * t is x*y.
  */
 COMPACT_25519_DECL const struct ed25519_pt ed25519_base = {
-	.x = {
-		0x1a, 0xd5, 0x25, 0x8f, 0x60, 0x2d, 0x56, 0xc9,
-		0xb2, 0xa7, 0x25, 0x95, 0x60, 0xc7, 0x2c, 0x69,
-		0x5c, 0xdc, 0xd6, 0xfd, 0x31, 0xe2, 0xa4, 0xc0,
-		0xfe, 0x53, 0x6e, 0xcd, 0xd3, 0x36, 0x69, 0x21
-	},
-	.y = {
-		0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
-		0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
-		0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
-		0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66
-	},
-	.t = {
-		0xa3, 0xdd, 0xb7, 0xa5, 0xb3, 0x8a, 0xde, 0x6d,
-		0xf5, 0x52, 0x51, 0x77, 0x80, 0x9f, 0xf0, 0x20,
-		0x7d, 0xe3, 0xab, 0x64, 0x8e, 0x4e, 0xea, 0x66,
-		0x65, 0x76, 0x8b, 0xd7, 0x0f, 0x5f, 0x87, 0x67
-	},
-	.z = {1, 0}
-};
+	.x = {0x1a, 0xd5, 0x25, 0x8f, 0x60, 0x2d, 0x56, 0xc9, 0xb2, 0xa7, 0x25,
+	      0x95, 0x60, 0xc7, 0x2c, 0x69, 0x5c, 0xdc, 0xd6, 0xfd, 0x31, 0xe2,
+	      0xa4, 0xc0, 0xfe, 0x53, 0x6e, 0xcd, 0xd3, 0x36, 0x69, 0x21},
+	.y = {0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+	      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+	      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66},
+	.t = {0xa3, 0xdd, 0xb7, 0xa5, 0xb3, 0x8a, 0xde, 0x6d, 0xf5, 0x52, 0x51,
+	      0x77, 0x80, 0x9f, 0xf0, 0x20, 0x7d, 0xe3, 0xab, 0x64, 0x8e, 0x4e,
+	      0xea, 0x66, 0x65, 0x76, 0x8b, 0xd7, 0x0f, 0x5f, 0x87, 0x67},
+	.z = {1, 0}};
 
 COMPACT_25519_DECL const struct ed25519_pt ed25519_neutral = {
-	.x = {0},
-	.y = {1, 0},
-	.t = {0},
-	.z = {1, 0}
-};
+	.x = {0}, .y = {1, 0}, .t = {0}, .z = {1, 0}};
 
 /* Conversion to and from projective coordinates */
-static COMPACT_25519_DECL void ed25519_project(struct ed25519_pt *p,
-		     const uint8_t *x, const uint8_t *y)
+static COMPACT_25519_DECL void ed25519_project(struct ed25519_pt *p, const uint8_t *x,
+					       const uint8_t *y)
 {
 	f25519_copy(p->x, x);
 	f25519_copy(p->y, y);
@@ -1382,8 +1358,7 @@ static COMPACT_25519_DECL void ed25519_project(struct ed25519_pt *p,
 	f25519_mul__distinct(p->t, x, y);
 }
 
-static COMPACT_25519_DECL void ed25519_unproject(uint8_t *x, uint8_t *y,
-		       const struct ed25519_pt *p)
+static COMPACT_25519_DECL void ed25519_unproject(uint8_t *x, uint8_t *y, const struct ed25519_pt *p)
 {
 	uint8_t z1[F25519_SIZE];
 
@@ -1411,11 +1386,9 @@ static COMPACT_25519_DECL void ed25519_unproject(uint8_t *x, uint8_t *y,
  */
 
 COMPACT_25519_DECL const uint8_t ed25519_d[F25519_SIZE] = {
-	0xa3, 0x78, 0x59, 0x13, 0xca, 0x4d, 0xeb, 0x75,
-	0xab, 0xd8, 0x41, 0x41, 0x4d, 0x0a, 0x70, 0x00,
-	0x98, 0xe8, 0x79, 0x77, 0x79, 0x40, 0xc7, 0x8c,
-	0x73, 0xfe, 0x6f, 0x2b, 0xee, 0x6c, 0x03, 0x52
-};
+	0xa3, 0x78, 0x59, 0x13, 0xca, 0x4d, 0xeb, 0x75, 0xab, 0xd8, 0x41,
+	0x41, 0x4d, 0x0a, 0x70, 0x00, 0x98, 0xe8, 0x79, 0x77, 0x79, 0x40,
+	0xc7, 0x8c, 0x73, 0xfe, 0x6f, 0x2b, 0xee, 0x6c, 0x03, 0x52};
 
 static COMPACT_25519_DECL void ed25519_pack(uint8_t *c, const uint8_t *x, const uint8_t *y)
 {
@@ -1473,14 +1446,12 @@ static COMPACT_25519_DECL uint8_t ed25519_try_unpack(uint8_t *x, uint8_t *y, con
 
 /* k = 2d */
 COMPACT_25519_DECL const uint8_t ed25519_k[F25519_SIZE] = {
-	0x59, 0xf1, 0xb2, 0x26, 0x94, 0x9b, 0xd6, 0xeb,
-	0x56, 0xb1, 0x83, 0x82, 0x9a, 0x14, 0xe0, 0x00,
-	0x30, 0xd1, 0xf3, 0xee, 0xf2, 0x80, 0x8e, 0x19,
-	0xe7, 0xfc, 0xdf, 0x56, 0xdc, 0xd9, 0x06, 0x24
-};
+	0x59, 0xf1, 0xb2, 0x26, 0x94, 0x9b, 0xd6, 0xeb, 0x56, 0xb1, 0x83,
+	0x82, 0x9a, 0x14, 0xe0, 0x00, 0x30, 0xd1, 0xf3, 0xee, 0xf2, 0x80,
+	0x8e, 0x19, 0xe7, 0xfc, 0xdf, 0x56, 0xdc, 0xd9, 0x06, 0x24};
 
-static COMPACT_25519_DECL void ed25519_add(struct ed25519_pt *r,
-		 const struct ed25519_pt *p1, const struct ed25519_pt *p2)
+static COMPACT_25519_DECL void ed25519_add(struct ed25519_pt *r, const struct ed25519_pt *p1,
+					   const struct ed25519_pt *p2)
 {
 	/* Explicit formulas database: add-2008-hwcd-3
 	 *
@@ -1622,7 +1593,7 @@ static COMPACT_25519_DECL void ed25519_double(struct ed25519_pt *r, const struct
 }
 
 static COMPACT_25519_DECL void ed25519_smult(struct ed25519_pt *r_out, const struct ed25519_pt *p,
-		   const uint8_t *e)
+					     const uint8_t *e)
 {
 	struct ed25519_pt r;
 	int i;
@@ -1655,14 +1626,12 @@ static COMPACT_25519_DECL void ed25519_smult(struct ed25519_pt *r_out, const str
 
 #ifndef COMPACT_DISABLE_ED25519
 
-#define EXPANDED_SIZE  64
+#define EXPANDED_SIZE 64
 
 COMPACT_25519_DECL const uint8_t ed25519_order[FPRIME_SIZE] = {
-	0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
-	0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10
-};
+	0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7,
+	0xa2, 0xde, 0xf9, 0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10};
 
 static COMPACT_25519_DECL void expand_key(uint8_t *expanded, const uint8_t *secret)
 {
@@ -1709,9 +1678,9 @@ static COMPACT_25519_DECL void edsign_sec_to_pub(uint8_t *pub, const uint8_t *se
 	sm_pack(pub, expanded);
 }
 
-static COMPACT_25519_DECL void hash_with_prefix(uint8_t *out_fp,
-			     uint8_t *init_block, unsigned int prefix_size,
-			     const uint8_t *message, size_t len)
+static COMPACT_25519_DECL void hash_with_prefix(uint8_t *out_fp, uint8_t *init_block,
+						unsigned int prefix_size, const uint8_t *message,
+						size_t len)
 {
 	struct sha512_state s;
 
@@ -1723,14 +1692,13 @@ static COMPACT_25519_DECL void hash_with_prefix(uint8_t *out_fp,
 	} else {
 		size_t i;
 
-		memcpy(init_block + prefix_size, message,
-		       SHA512_BLOCK_SIZE - prefix_size);
+		memcpy(init_block + prefix_size, message, SHA512_BLOCK_SIZE - prefix_size);
 		sha512_block(&s, init_block);
 
-		for (i = SHA512_BLOCK_SIZE - prefix_size;
-		     i + SHA512_BLOCK_SIZE <= len;
-		     i += SHA512_BLOCK_SIZE)
+		for (i = SHA512_BLOCK_SIZE - prefix_size; i + SHA512_BLOCK_SIZE <= len;
+		     i += SHA512_BLOCK_SIZE) {
 			sha512_block(&s, message + i);
+		}
 
 		sha512_final(&s, message + i, len + prefix_size);
 	}
@@ -1740,7 +1708,7 @@ static COMPACT_25519_DECL void hash_with_prefix(uint8_t *out_fp,
 }
 
 static COMPACT_25519_DECL void generate_k(uint8_t *k, const uint8_t *kgen_key,
-		       const uint8_t *message, size_t len)
+					  const uint8_t *message, size_t len)
 {
 	uint8_t block[SHA512_BLOCK_SIZE];
 
@@ -1749,7 +1717,7 @@ static COMPACT_25519_DECL void generate_k(uint8_t *k, const uint8_t *kgen_key,
 }
 
 static COMPACT_25519_DECL void hash_message(uint8_t *z, const uint8_t *r, const uint8_t *a,
-			 const uint8_t *m, size_t len)
+					    const uint8_t *m, size_t len)
 {
 	uint8_t block[SHA512_BLOCK_SIZE];
 
@@ -1759,8 +1727,8 @@ static COMPACT_25519_DECL void hash_message(uint8_t *z, const uint8_t *r, const 
 }
 
 static COMPACT_25519_DECL void edsign_sign(uint8_t *signature, const uint8_t *pub,
-		 const uint8_t *secret,
-		 const uint8_t *message, size_t len)
+					   const uint8_t *secret, const uint8_t *message,
+					   size_t len)
 {
 	uint8_t expanded[EXPANDED_SIZE];
 	uint8_t e[FPRIME_SIZE];
@@ -1787,7 +1755,7 @@ static COMPACT_25519_DECL void edsign_sign(uint8_t *signature, const uint8_t *pu
 }
 
 static COMPACT_25519_DECL uint8_t edsign_verify(const uint8_t *signature, const uint8_t *pub,
-		      const uint8_t *message, size_t len)
+						const uint8_t *message, size_t len)
 {
 	struct ed25519_pt p;
 	struct ed25519_pt q;
@@ -1819,12 +1787,14 @@ static COMPACT_25519_DECL uint8_t edsign_verify(const uint8_t *signature, const 
 #include <stdlib.h>
 #include <string.h>
 
-COMPACT_25519_DECL void *compact_wipe(void *data, size_t length) {
-// simplification of: https://www.cryptologie.net/article/419/zeroing-memory-compiler-optimizations-and-memset_s/
-	 volatile unsigned char *p = data;
-	 while (length--){
-		 *p++ = 0;
-	 }
+COMPACT_25519_DECL void *compact_wipe(void *data, size_t length)
+{
+	// simplification of:
+	// https://www.cryptologie.net/article/419/zeroing-memory-compiler-optimizations-and-memset_s/
+	volatile unsigned char *p = data;
+	while (length--) {
+		*p++ = 0;
+	}
 	return data;
 }
 // ******* END:   compact_wipe.c ********
@@ -1832,64 +1802,60 @@ COMPACT_25519_DECL void *compact_wipe(void *data, size_t length) {
 
 #ifndef COMPACT_DISABLE_X25519
 
-COMPACT_25519_DECL void compact_x25519_keygen(
-    uint8_t private_key[X25519_KEY_SIZE], 
-    uint8_t public_key[X25519_KEY_SIZE],
-    uint8_t random_seed[X25519_KEY_SIZE]
-) {
-    memcpy(private_key, random_seed, X25519_KEY_SIZE);
-    compact_wipe(random_seed, X25519_KEY_SIZE);
-    c25519_prepare(private_key);
-    c25519_smult(public_key, c25519_base_x, private_key);
+COMPACT_25519_DECL void compact_x25519_keygen(uint8_t private_key[X25519_KEY_SIZE],
+					      uint8_t public_key[X25519_KEY_SIZE],
+					      uint8_t random_seed[X25519_KEY_SIZE])
+{
+	memcpy(private_key, random_seed, X25519_KEY_SIZE);
+	compact_wipe(random_seed, X25519_KEY_SIZE);
+	c25519_prepare(private_key);
+	c25519_smult(public_key, c25519_base_x, private_key);
 }
 
-COMPACT_25519_DECL void compact_x25519_shared(
-    uint8_t shared_secret[X25519_SHARED_SIZE], 
-    const uint8_t my_private_key[X25519_KEY_SIZE], 
-    const uint8_t their_public_key[X25519_KEY_SIZE]
-) {
-    // Ensure that supplied private key is clamped (fix issue #1).
-    // Calling `c25519_prepare` multiple times for the same private key
-    // is OK because it won't modify already clamped key.
-    uint8_t clamped_private_key[X25519_KEY_SIZE];
-    memcpy(clamped_private_key, my_private_key, X25519_KEY_SIZE);
-    c25519_prepare(clamped_private_key);
-    c25519_smult(shared_secret, their_public_key, clamped_private_key);
-    compact_wipe(clamped_private_key, X25519_KEY_SIZE);
+COMPACT_25519_DECL void compact_x25519_shared(uint8_t shared_secret[X25519_SHARED_SIZE],
+					      const uint8_t my_private_key[X25519_KEY_SIZE],
+					      const uint8_t their_public_key[X25519_KEY_SIZE])
+{
+	// Ensure that supplied private key is clamped (fix issue #1).
+	// Calling `c25519_prepare` multiple times for the same private key
+	// is OK because it won't modify already clamped key.
+	uint8_t clamped_private_key[X25519_KEY_SIZE];
+	memcpy(clamped_private_key, my_private_key, X25519_KEY_SIZE);
+	c25519_prepare(clamped_private_key);
+	c25519_smult(shared_secret, their_public_key, clamped_private_key);
+	compact_wipe(clamped_private_key, X25519_KEY_SIZE);
 }
 
 #ifndef COMPACT_DISABLE_X25519_DERIVE
-#if (X25519_KEY_SIZE + (2 * X25519_KEY_SIZE)) > SHA512_BLOCK_SIZE 
+#if (X25519_KEY_SIZE + (2 * X25519_KEY_SIZE)) > SHA512_BLOCK_SIZE
 #error "Unexpected key sizes"
 #endif
 
-static COMPACT_25519_DECL uint8_t* append(uint8_t *dst, const void * source, size_t length) {
-    memcpy(dst, source, length);
-    return dst + length;
+static COMPACT_25519_DECL uint8_t *append(uint8_t *dst, const void *source, size_t length)
+{
+	memcpy(dst, source, length);
+	return dst + length;
 }
 
 COMPACT_25519_DECL void compact_x25519_derive_encryption_key(
-    uint8_t *encryption_key, 
-    size_t key_size, 
-    const uint8_t shared_secret[X25519_SHARED_SIZE], 
-    const uint8_t public_key1[X25519_KEY_SIZE], 
-    const uint8_t public_key2[X25519_KEY_SIZE]
-) {
-    if (key_size > SHA512_HASH_SIZE) {
-        key_size = SHA512_HASH_SIZE;
-    }
-    uint8_t key_data[X25519_SHARED_SIZE + 2 * X25519_KEY_SIZE];
-    uint8_t *p = key_data;
-    p = append(p, shared_secret, X25519_SHARED_SIZE);
-    p = append(p, public_key1, X25519_KEY_SIZE);
-    append(p, public_key2, X25519_KEY_SIZE);
+	uint8_t *encryption_key, size_t key_size, const uint8_t shared_secret[X25519_SHARED_SIZE],
+	const uint8_t public_key1[X25519_KEY_SIZE], const uint8_t public_key2[X25519_KEY_SIZE])
+{
+	if (key_size > SHA512_HASH_SIZE) {
+		key_size = SHA512_HASH_SIZE;
+	}
+	uint8_t key_data[X25519_SHARED_SIZE + 2 * X25519_KEY_SIZE];
+	uint8_t *p = key_data;
+	p = append(p, shared_secret, X25519_SHARED_SIZE);
+	p = append(p, public_key1, X25519_KEY_SIZE);
+	append(p, public_key2, X25519_KEY_SIZE);
 
-    struct sha512_state hasher;
-    sha512_init(&hasher);
-    sha512_final(&hasher, key_data, sizeof(key_data));
-    sha512_get(&hasher, encryption_key, 0, key_size);
+	struct sha512_state hasher;
+	sha512_init(&hasher);
+	sha512_final(&hasher, key_data, sizeof(key_data));
+	sha512_get(&hasher, encryption_key, 0, key_size);
 
-    compact_wipe(key_data, X25519_SHARED_SIZE); // clear the session key at least
+	compact_wipe(key_data, X25519_SHARED_SIZE); // clear the session key at least
 }
 #endif
 #endif
@@ -1902,41 +1868,36 @@ COMPACT_25519_DECL void compact_x25519_derive_encryption_key(
 
 #define __PUBLIC_KEY_OFFSET (32)
 
-COMPACT_25519_DECL void compact_ed25519_keygen(
-    uint8_t private_key[ED25519_PRIVATE_KEY_SIZE], 
-    uint8_t public_key[ED25519_PUBLIC_KEY_SIZE], 
-    uint8_t random_seed[ED25519_SEED_SIZE]
-) {
-    // private key is seed + public key, like golang and others
-    edsign_sec_to_pub(public_key, random_seed);
-    memcpy(private_key, random_seed, ED25519_SEED_SIZE);
-    memcpy(private_key + __PUBLIC_KEY_OFFSET, public_key, ED25519_PUBLIC_KEY_SIZE);
-    compact_wipe(random_seed, ED25519_SEED_SIZE);
+COMPACT_25519_DECL void compact_ed25519_keygen(uint8_t private_key[ED25519_PRIVATE_KEY_SIZE],
+					       uint8_t public_key[ED25519_PUBLIC_KEY_SIZE],
+					       uint8_t random_seed[ED25519_SEED_SIZE])
+{
+	// private key is seed + public key, like golang and others
+	edsign_sec_to_pub(public_key, random_seed);
+	memcpy(private_key, random_seed, ED25519_SEED_SIZE);
+	memcpy(private_key + __PUBLIC_KEY_OFFSET, public_key, ED25519_PUBLIC_KEY_SIZE);
+	compact_wipe(random_seed, ED25519_SEED_SIZE);
 }
 
-COMPACT_25519_DECL void compact_ed25519_calc_public_key(
-    uint8_t public_key[ED25519_PUBLIC_KEY_SIZE], 
-    const uint8_t private_key[ED25519_PRIVATE_KEY_SIZE]
-) {
-    memcpy(public_key, private_key + __PUBLIC_KEY_OFFSET, ED25519_PUBLIC_KEY_SIZE);
+COMPACT_25519_DECL void
+compact_ed25519_calc_public_key(uint8_t public_key[ED25519_PUBLIC_KEY_SIZE],
+				const uint8_t private_key[ED25519_PRIVATE_KEY_SIZE])
+{
+	memcpy(public_key, private_key + __PUBLIC_KEY_OFFSET, ED25519_PUBLIC_KEY_SIZE);
 }
 
-COMPACT_25519_DECL void compact_ed25519_sign(
-    uint8_t signature[ED25519_SIGNATURE_SIZE], 
-    const uint8_t private_key[ED25519_PRIVATE_KEY_SIZE], 
-    const void *message, 
-    size_t msg_length
-) {
-    edsign_sign(signature, private_key + __PUBLIC_KEY_OFFSET, private_key, message, msg_length);
+COMPACT_25519_DECL void compact_ed25519_sign(uint8_t signature[ED25519_SIGNATURE_SIZE],
+					     const uint8_t private_key[ED25519_PRIVATE_KEY_SIZE],
+					     const void *message, size_t msg_length)
+{
+	edsign_sign(signature, private_key + __PUBLIC_KEY_OFFSET, private_key, message, msg_length);
 }
 
-COMPACT_25519_DECL bool compact_ed25519_verify(
-    const uint8_t signature[ED25519_SIGNATURE_SIZE], 
-    const uint8_t public_key[ED25519_PUBLIC_KEY_SIZE], 
-    const void *message, 
-    size_t msg_length
-) {
-    return edsign_verify(signature, public_key, message, msg_length) != 0;
+COMPACT_25519_DECL bool compact_ed25519_verify(const uint8_t signature[ED25519_SIGNATURE_SIZE],
+					       const uint8_t public_key[ED25519_PUBLIC_KEY_SIZE],
+					       const void *message, size_t msg_length)
+{
+	return edsign_verify(signature, public_key, message, msg_length) != 0;
 }
 #endif
 // ******* END:   compact_ed25519.c ********

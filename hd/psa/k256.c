@@ -130,7 +130,6 @@ int psa_normalize_signature(uint8_t *sig)
 	mbedtls_mpi_free(&half_order);
 	mbedtls_ecp_group_free(&grp);
 
-
 	return ret;
 }
 
