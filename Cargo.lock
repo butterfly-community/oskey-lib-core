@@ -524,6 +524,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oskey-chain"
+version = "0.0.1"
+
+[[package]]
 name = "oskey-wallet"
 version = "0.0.1"
 dependencies = [
