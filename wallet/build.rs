@@ -1,11 +1,9 @@
 #[cfg(feature = "build")]
 use cmake::Config;
-#[cfg(feature = "build")]
-use std::time::SystemTime;
 
 #[cfg(feature = "build")]
 fn main() {
-    println!("cargo:rerun-if-changed={:?}", SystemTime::now());
+    println!("cargo:rerun-if-changed=psa/");
 
     let dst = Config::new("./")
         .define("MBEDTLS_USE_STATIC_LIBS", "ON")
