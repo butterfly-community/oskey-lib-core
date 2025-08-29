@@ -6,3 +6,5 @@ description = ""
 license = ""
 
 [dependencies]
+anyhow = { version = "1.0", default-features = false }
+oskey-bus = { package = "oskey-bus", path = "../bus" }

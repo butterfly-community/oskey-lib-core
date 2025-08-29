@@ -513,6 +513,10 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 [[package]]
 name = "oskey-action"
 version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "oskey-bus",
+]
 
 [[package]]
 name = "oskey-bus"
