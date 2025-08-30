@@ -515,7 +515,9 @@ name = "oskey-action"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "hex",
  "oskey-bus",
+ "oskey-wallet",
 ]
 
 [[package]]
