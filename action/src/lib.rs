@@ -11,9 +11,10 @@ use oskey_wallet::wallets;
 
 pub type VersionCallback = unsafe extern "C" fn(data: *mut u8, len: usize) -> bool;
 pub type CheckInitCallback = unsafe extern "C" fn() -> bool;
-pub type RandomCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
-pub type InitCallback = extern "C" fn(data: *const u8, len: usize, phrase_len: usize) -> bool;
-pub type GetSeedStorageCallback = extern "C" fn(data: *mut u8) -> bool;
+pub type RandomCallback = unsafe extern "C" fn(data: *mut u8, len: usize) -> bool;
+pub type InitCallback =
+    unsafe extern "C" fn(data: *const u8, len: usize, phrase_len: usize) -> bool;
+pub type GetSeedStorageCallback = unsafe extern "C" fn(data: *mut u8) -> bool;
 
 pub fn wallet_unknown_req() -> res_data::Payload {
     return res_data::Payload::Unknown(proto::Unknown {});
@@ -29,9 +30,7 @@ pub fn wallet_version_req(
         version_cb(buffer.as_mut_ptr(), buffer.len());
     }
 
-    let init_check = unsafe {
-        check_init_cb()
-    };
+    let init_check = unsafe { check_init_cb() };
 
     let features = oskey_bus::proto::Features {
         initialized: init_check,
@@ -61,12 +60,17 @@ pub fn wallet_init_default(
     let need_len = data.length as usize * 4 / 3;
 
     let mut buffer = vec![0u8; need_len];
-    random_cb(buffer.as_mut_ptr(), need_len);
+
+    unsafe {
+        random_cb(buffer.as_mut_ptr(), need_len);
+    }
 
     let mnemonic = mnemonic::Mnemonic::from_entropy(&buffer)?;
     let seed = mnemonic.to_seed(&data.password)?;
 
-    init_cb(seed.as_ptr(), seed.len(), data.length as usize);
+    unsafe {
+        init_cb(seed.as_ptr(), seed.len(), data.length as usize);
+    }
 
     //TODO: only debug return mnemonic msg.
     let init = proto::InitWalletResponse {
@@ -83,7 +87,9 @@ pub fn wallet_init_custom(
     let mnemonic = mnemonic::Mnemonic::from_phrase(&data.words)?;
     let seed = mnemonic.to_seed(&data.password)?;
 
-    init_cb(seed.as_ptr(), seed.len(), mnemonic.words.len() as usize);
+    unsafe {
+        init_cb(seed.as_ptr(), seed.len(), mnemonic.words.len() as usize);
+    }
 
     //TODO: only debug return mnemonic msg.
     let init = proto::InitWalletResponse {
@@ -101,7 +107,9 @@ pub fn wallet_drive_public_key(
 ) -> Result<res_data::Payload> {
     let mut buffer = vec![0u8; 64];
 
-    seed_storage_cb(buffer.as_mut_ptr());
+    unsafe {
+        seed_storage_cb(buffer.as_mut_ptr());
+    }
 
     let ex_priv_key = wallets::ExtendedPrivKey::derive(
         &buffer,
@@ -127,7 +135,9 @@ pub fn wallet_sign_msg(
 ) -> Result<res_data::Payload> {
     let mut buffer = vec![0u8; 64];
 
-    seed_storage_cb(buffer.as_mut_ptr());
+    unsafe {
+        seed_storage_cb(buffer.as_mut_ptr());
+    }
 
     let ex_priv_key = wallets::ExtendedPrivKey::derive(
         &buffer,
