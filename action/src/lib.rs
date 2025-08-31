@@ -14,7 +14,7 @@ pub type CheckInitCallback = unsafe extern "C" fn() -> bool;
 pub type RandomCallback = unsafe extern "C" fn(data: *mut u8, len: usize) -> bool;
 pub type InitCallback =
     unsafe extern "C" fn(data: *const u8, len: usize, phrase_len: usize) -> bool;
-pub type GetSeedStorageCallback = unsafe extern "C" fn(data: *mut u8) -> bool;
+pub type GetSeedStorageCallback = unsafe extern "C" fn(data: *mut u8, len: usize) -> bool;
 
 pub fn wallet_unknown_req() -> res_data::Payload {
     return res_data::Payload::Unknown(proto::Unknown {});
@@ -108,7 +108,7 @@ pub fn wallet_drive_public_key(
     let mut buffer = vec![0u8; 64];
 
     unsafe {
-        seed_storage_cb(buffer.as_mut_ptr());
+        seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
     }
 
     let ex_priv_key = wallets::ExtendedPrivKey::derive(
@@ -136,7 +136,7 @@ pub fn wallet_sign_msg(
     let mut buffer = vec![0u8; 64];
 
     unsafe {
-        seed_storage_cb(buffer.as_mut_ptr());
+        seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
     }
 
     let ex_priv_key = wallets::ExtendedPrivKey::derive(
@@ -212,10 +212,10 @@ mod tests {
         true
     }
 
-    extern "C" fn get_seed_storage_cb(data: *mut u8) -> bool {
+    extern "C" fn get_seed_storage_cb(data: *mut u8, len: usize) -> bool {
         let seed = hex::decode("408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840").unwrap();
         unsafe {
-            core::ptr::copy_nonoverlapping(seed.as_ptr(), data, seed.len());
+            core::ptr::copy_nonoverlapping(seed.as_ptr(), data, len);
         }
         true
     }
