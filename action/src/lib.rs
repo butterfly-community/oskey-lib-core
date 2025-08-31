@@ -3,11 +3,12 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec;
 use anyhow::Result;
+use core::ffi::CStr;
 use oskey_bus::{proto, proto::res_data};
 use oskey_wallet::mnemonic;
 use oskey_wallet::wallets;
 
-pub type VersionCallback = extern "C" fn(data: *mut u8, len: *mut usize) -> bool;
+pub type VersionCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
 pub type CheckInitCallback = extern "C" fn() -> bool;
 pub type RandomCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
 pub type InitCallback = extern "C" fn(data: *const u8, len: usize, phrase_len: usize) -> bool;
@@ -22,9 +23,8 @@ pub fn wallet_version_req(
     check_init_cb: CheckInitCallback,
 ) -> res_data::Payload {
     let mut buffer = vec![0u8; 10];
-    let mut version_len: usize = 0;
 
-    let _version_check = version_cb(buffer.as_mut_ptr(), &mut version_len);
+    version_cb(buffer.as_mut_ptr(), buffer.len());
 
     let init_check = check_init_cb();
 
@@ -34,7 +34,13 @@ pub fn wallet_version_req(
     };
 
     let version = oskey_bus::proto::VersionResponse {
-        version: String::from(core::str::from_utf8(&buffer[..version_len]).unwrap_or("unknown")),
+        version: unsafe {
+            String::from(
+                CStr::from_ptr(buffer.as_ptr() as *const i8)
+                    .to_str()
+                    .unwrap_or("unknown"),
+            )
+        },
         features: features.into(),
     };
 
@@ -146,11 +152,14 @@ mod tests {
     use anyhow::{anyhow, Result};
     use oskey_bus::proto::req_data;
 
-    extern "C" fn version_cb(data: *mut u8, len: *mut usize) -> bool {
+    extern "C" fn version_cb(data: *mut u8, len: usize) -> bool {
         let version = b"1.0.0";
         unsafe {
-            core::ptr::copy_nonoverlapping(version.as_ptr(), data, version.len());
-            *len = version.len();
+            if len >= version.len() {
+                core::ptr::copy_nonoverlapping(version.as_ptr(), data, version.len());
+            } else {
+                return false;
+            }
         }
         true
     }
