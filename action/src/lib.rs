@@ -3,13 +3,14 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec;
 use anyhow::Result;
+use core::ffi::c_char;
 use core::ffi::CStr;
 use oskey_bus::{proto, proto::res_data};
 use oskey_wallet::mnemonic;
 use oskey_wallet::wallets;
 
-pub type VersionCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
-pub type CheckInitCallback = extern "C" fn() -> bool;
+pub type VersionCallback = unsafe extern "C" fn(data: *mut u8, len: usize) -> bool;
+pub type CheckInitCallback = unsafe extern "C" fn() -> bool;
 pub type RandomCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
 pub type InitCallback = extern "C" fn(data: *const u8, len: usize, phrase_len: usize) -> bool;
 pub type GetSeedStorageCallback = extern "C" fn(data: *mut u8) -> bool;
@@ -24,9 +25,13 @@ pub fn wallet_version_req(
 ) -> res_data::Payload {
     let mut buffer = vec![0u8; 10];
 
-    version_cb(buffer.as_mut_ptr(), buffer.len());
+    unsafe {
+        version_cb(buffer.as_mut_ptr(), buffer.len());
+    }
 
-    let init_check = check_init_cb();
+    let init_check = unsafe {
+        check_init_cb()
+    };
 
     let features = oskey_bus::proto::Features {
         initialized: init_check,
@@ -36,7 +41,7 @@ pub fn wallet_version_req(
     let version = oskey_bus::proto::VersionResponse {
         version: unsafe {
             String::from(
-                CStr::from_ptr(buffer.as_ptr() as *const i8)
+                CStr::from_ptr(buffer.as_ptr() as *const c_char)
                     .to_str()
                     .unwrap_or("unknown"),
             )
