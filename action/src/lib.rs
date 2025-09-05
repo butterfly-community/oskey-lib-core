@@ -55,6 +55,7 @@ pub fn wallet_version_req(
 pub fn wallet_init_default(
     data: proto::InitWalletRequest,
     random_cb: RandomCallback,
+    save_seed: bool,
     init_cb: InitCallback,
 ) -> Result<res_data::Payload> {
     let need_len = data.length as usize * 4 / 3;
@@ -68,8 +69,10 @@ pub fn wallet_init_default(
     let mnemonic = mnemonic::Mnemonic::from_entropy(&buffer)?;
     let seed = mnemonic.to_seed(&data.password)?;
 
-    unsafe {
-        init_cb(seed.as_ptr(), seed.len(), data.length as usize);
+    if save_seed {
+        unsafe {
+            init_cb(seed.as_ptr(), seed.len(), data.length as usize);
+        }
     }
 
     //TODO: only debug return mnemonic msg.
@@ -233,7 +236,7 @@ mod tests {
             req_data::Payload::Unknown(_unknown) => wallet_unknown_req(),
             req_data::Payload::VersionRequest(_) => wallet_version_req(version_cb, check_init_cb),
             req_data::Payload::InitRequest(data) => {
-                wallet_init_default(data, random_cb, init_cb_no_password)?
+                wallet_init_default(data, random_cb, true, init_cb_no_password)?
             }
             req_data::Payload::InitCustomRequest(data) => {
                 wallet_init_custom(data, init_cb_no_password)?
