@@ -377,6 +377,7 @@ mod tests {
                     "94ee059335e587e501cc4bf90613e0814f00a7b08bc7c648fd865a2af6a22cc2",
                 )
                 .unwrap(),
+                debug_text: None,
             })),
         };
         let res = res_data::Payload::SignResponse(proto::SignResponse {
