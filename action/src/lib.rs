@@ -67,9 +67,9 @@ pub fn wallet_init_default(
     }
 
     let mnemonic = mnemonic::Mnemonic::from_entropy(&buffer)?;
-    let seed = mnemonic.to_seed(&data.password)?;
 
     if save_seed {
+        let seed = mnemonic.to_seed(&data.password)?;
         unsafe {
             init_cb(seed.as_ptr(), seed.len(), data.length as usize);
         }
