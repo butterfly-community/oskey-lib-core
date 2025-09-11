@@ -8,11 +8,11 @@ use oskey_bus::{proto, proto::res_data};
 use oskey_wallet::mnemonic;
 use oskey_wallet::wallets;
 
-pub type VersionCallback = extern "C" fn(data: *mut u8, len: *mut usize) -> bool;
+pub type VersionCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
 pub type CheckInitCallback = extern "C" fn() -> bool;
-pub type RandomCallback = extern "C" fn(data: *mut u8, len: *mut usize) -> bool;
+pub type RandomCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
 pub type InitCallback = extern "C" fn(data: *const u8, len: usize, phrase_len: usize) -> bool;
-pub type GetSeedStorageCallback = extern "C" fn(data: *mut u8, len: *mut usize) -> bool;
+pub type GetSeedStorageCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
 
 pub fn wallet_unknown_req() -> res_data::Payload {
     return res_data::Payload::Unknown(proto::Unknown {});
@@ -24,7 +24,7 @@ pub fn wallet_version_req(
 ) -> res_data::Payload {
     let mut buffer = vec![0u8; 10];
 
-    version_cb(buffer.as_mut_ptr(), &mut buffer.len());
+    version_cb(buffer.as_mut_ptr(), buffer.len());
 
     let init_check = check_init_cb();
 
@@ -53,11 +53,11 @@ pub fn wallet_init_default(
     save_seed: bool,
     init_cb: InitCallback,
 ) -> Result<res_data::Payload> {
-    let mut need_len = data.length as usize * 4 / 3;
+    let need_len = data.length as usize * 4 / 3;
 
     let mut buffer = vec![0u8; need_len];
 
-    random_cb(buffer.as_mut_ptr(), &mut need_len);
+    random_cb(buffer.as_mut_ptr(), need_len);
 
     let mnemonic = mnemonic::Mnemonic::from_entropy(&buffer)?;
 
@@ -81,11 +81,7 @@ pub fn wallet_init_custom(
     let mnemonic = mnemonic::Mnemonic::from_phrase(&data.words)?;
     let seed = mnemonic.to_seed(&data.password)?;
 
-    init_cb(
-        seed.as_ptr(),
-        seed.len(),
-        mnemonic.words.len() as usize,
-    );
+    init_cb(seed.as_ptr(), seed.len(), mnemonic.words.len() as usize);
     //TODO: only debug return mnemonic msg.
     let init = proto::InitWalletResponse {
         mnemonic: mnemonic.words.join(" ").into(),
@@ -102,7 +98,7 @@ pub fn wallet_drive_public_key(
 ) -> Result<res_data::Payload> {
     let mut buffer = vec![0u8; 64];
 
-    seed_storage_cb(buffer.as_mut_ptr(), &mut buffer.len());
+    seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
 
     let ex_priv_key = wallets::ExtendedPrivKey::derive(
         &buffer,
@@ -128,7 +124,7 @@ pub fn wallet_sign_msg(
 ) -> Result<res_data::Payload> {
     let mut buffer = vec![0u8; 64];
 
-    seed_storage_cb(buffer.as_mut_ptr(), &mut buffer.len());
+    seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
 
     let ex_priv_key = wallets::ExtendedPrivKey::derive(
         &buffer,
@@ -158,10 +154,10 @@ mod tests {
     use anyhow::{anyhow, Result};
     use oskey_bus::proto::req_data;
 
-    extern "C" fn version_cb(data: *mut u8, len: *mut usize) -> bool {
+    extern "C" fn version_cb(data: *mut u8, len: usize) -> bool {
         let version = b"1.0.0";
         unsafe {
-            if *len >= version.len() {
+            if len >= version.len() {
                 core::ptr::copy_nonoverlapping(version.as_ptr(), data, version.len());
             } else {
                 return false;
@@ -174,13 +170,13 @@ mod tests {
         true
     }
 
-    extern "C" fn random_cb(data: *mut u8, len: *mut usize) -> bool {
+    extern "C" fn random_cb(data: *mut u8, len: usize) -> bool {
         let random =
             hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
                 .unwrap();
-        if unsafe { *len } <= random.len() {
+        if len <= random.len() {
             unsafe {
-                core::ptr::copy_nonoverlapping(random.as_ptr(), data, *len);
+                core::ptr::copy_nonoverlapping(random.as_ptr(), data, len);
             }
             true
         } else {
@@ -203,10 +199,10 @@ mod tests {
         true
     }
 
-    extern "C" fn get_seed_storage_cb(data: *mut u8, len: *mut usize) -> bool {
+    extern "C" fn get_seed_storage_cb(data: *mut u8, len: usize) -> bool {
         let seed = hex::decode("408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840").unwrap();
         unsafe {
-            core::ptr::copy_nonoverlapping(seed.as_ptr(), data, *len);
+            core::ptr::copy_nonoverlapping(seed.as_ptr(), data, len);
         }
         true
     }
