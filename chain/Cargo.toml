@@ -6,3 +6,9 @@ description = ""
 license = ""
 
 [dependencies]
+oskey-bus = { package = "oskey-bus", path = "../bus" }
+alloy-consensus = { version = "1.0", default-features = false }
+anyhow = { version = "1.0", default-features = false }
+hex = { version = "0.4", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]

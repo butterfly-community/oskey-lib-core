@@ -12,6 +12,7 @@ message ReqData
 		InitWalletRequest init_request = 40;
 		DerivePublicKeyRequest derive_public_key_request = 50;
 		SignRequest sign_request = 60;
+		SignEthRequest sign_eth_request = 70;
 	}
 }
 
@@ -93,4 +94,27 @@ message SignResponse
 	bytes pre_hash = 4;
 	bytes signature = 5;
 	optional uint32 recovery_id = 6;
+}
+
+message SignEthRequest
+{
+	int32 id = 1;
+	string path = 2;
+	oneof tx
+	{
+		AppEthLegacyTx eip_legacy_tx = 10;
+	}
+	optional string debug_text = 5;
+}
+
+message AppEthLegacyTx
+{
+	uint64 chain_id = 1;
+	uint64 nonce = 2;
+	optional string to = 5;
+	string gas_price = 3;
+	uint64 gas_limit = 4;
+	string value = 6;
+	optional bytes input = 7;
+	optional bytes access_list = 8;
 }

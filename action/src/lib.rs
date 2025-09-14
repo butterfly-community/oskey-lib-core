@@ -229,6 +229,7 @@ mod tests {
                 wallet_drive_public_key(data, get_seed_storage_cb)?
             }
             req_data::Payload::SignRequest(data) => wallet_sign_msg(data, get_seed_storage_cb)?,
+            _ => return Err(anyhow!("Not Implemented")),
         };
 
         let response = proto::ResData {
