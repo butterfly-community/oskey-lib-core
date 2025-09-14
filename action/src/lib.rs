@@ -5,6 +5,7 @@ use alloc::vec;
 use anyhow::Result;
 use core::ffi::CStr;
 use oskey_bus::{proto, proto::res_data};
+use oskey_chain::eth::OSKeyTxEip2930;
 use oskey_wallet::mnemonic;
 use oskey_wallet::wallets;
 
@@ -148,9 +149,47 @@ pub fn wallet_sign_msg(
     return Ok(payload);
 }
 
+pub fn wallet_sign_eth(
+    data: proto::SignEthRequest,
+    seed_storage_cb: GetSeedStorageCallback,
+) -> Result<(res_data::Payload, OSKeyTxEip2930)> {
+    let mut buffer = vec![0u8; 64];
+
+    seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
+
+    let ex_priv_key = wallets::ExtendedPrivKey::derive(
+        &buffer,
+        data.path.parse()?,
+        oskey_wallet::wallets::Curve::K256,
+    )?;
+
+    let proto::sign_eth_request::Tx::EipLegacyTx(source) =
+        data.tx.ok_or(anyhow::anyhow!("No Tx Data"))?;
+
+    let tx = OSKeyTxEip2930::from_proto(source)?;
+
+    let hash = tx.hash();
+
+    let sign = ex_priv_key.sign(&hash)?;
+
+    let data = proto::SignResponse {
+        id: data.id,
+        message: "".into(),
+        public_key: ex_priv_key.export_pk()?.to_vec(),
+        pre_hash: hash.to_vec(),
+        signature: sign.to_vec(),
+        recovery_id: None,
+    };
+
+    let payload = res_data::Payload::SignResponse(data);
+
+    return Ok((payload, tx));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use anyhow::{anyhow, Result};
     use oskey_bus::proto::req_data;
 
@@ -207,14 +246,6 @@ mod tests {
         true
     }
 
-    // fn event_bytes_handle(bytes: *mut u8, len: usize) -> Result<oskey_bus::proto::ReqData> {
-    //     let bytes = unsafe { core::slice::from_raw_parts(bytes, len) };
-    //     let parser = oskey_bus::FrameParser::unpack(bytes)?.ok_or(anyhow!("Waiting"))?;
-    //     let req_data =
-    //         oskey_bus::proto::ReqData::decode(parser.as_slice()).map_err(|e| anyhow!(e))?;
-    //     Ok(req_data)
-    // }
-
     pub fn event_hub(req: oskey_bus::proto::ReqData) -> Result<proto::ResData> {
         let payload = match req.payload.ok_or(anyhow!("Fail"))? {
             req_data::Payload::Unknown(_unknown) => wallet_unknown_req(),
@@ -229,7 +260,9 @@ mod tests {
                 wallet_drive_public_key(data, get_seed_storage_cb)?
             }
             req_data::Payload::SignRequest(data) => wallet_sign_msg(data, get_seed_storage_cb)?,
-            _ => return Err(anyhow!("Not Implemented")),
+            req_data::Payload::SignEthRequest(data) => {
+                wallet_sign_eth(data, get_seed_storage_cb)?.0
+            }
         };
 
         let response = proto::ResData {
@@ -377,5 +410,40 @@ mod tests {
         let event = event_hub(req).unwrap();
 
         assert_eq!(event.payload.unwrap(), res);
+    }
+
+    #[test]
+    fn test_wallet_sign_eth_res() {
+        let req = proto::ReqData {
+            payload: Some(req_data::Payload::SignEthRequest(proto::SignEthRequest {
+                id: 1,
+                path: String::from("m/44'/60'/0'/0/0"),
+                debug_text: None,
+                tx: Some(proto::sign_eth_request::Tx::EipLegacyTx(
+                    proto::AppEthLegacyTx {
+                        chain_id: 0xaa36a7,
+                        nonce: 0x5,
+                        gas_price: "1112408".to_string(),
+                        gas_limit: 0x5208,
+                        to: Some("0x00Ab1EAd740f95aDE25b78B3137fdcC333326e7d".to_string()),
+                        value: "0x16345785d8a0000".to_string(),
+                        input: None,
+                        access_list: None,
+                    },
+                )),
+            })),
+        };
+
+        let res = res_data::Payload::SignResponse(proto::SignResponse {
+            id: 1,
+            message: "".into(),
+            public_key: hex::decode("04dc286c821c7490afbe20a79d13123b9f41f3d7ef21e4a9caacd22f5983b28eca0e4dbd5624505a2c968fec15f25990c7324736890f6d0f74241f98e4259c1d42").unwrap(),
+            pre_hash: hex::decode("e8a4c5905197c0ebe135460219fd0f47381b17c91d1d28e51feca29980a10a69").unwrap(),
+            signature: hex::decode("20d20999d1b08983bcf36bc5205643765ee9e68c22268b32d21861b71957faa45308e2d917edfbf761e4da7530f87ee012eca06e88b14d99064ad692c1cd56bb").unwrap(),
+            recovery_id: None,
+        });
+
+        let event = event_hub(req).unwrap();
+        assert_eq!(event.payload.unwrap(), res)
     }
 }

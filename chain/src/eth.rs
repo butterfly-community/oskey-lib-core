@@ -1,11 +1,11 @@
 extern crate alloc;
+use alloc::vec;
 use alloc::vec::Vec;
 use alloy_consensus::private::alloy_primitives::{keccak256, TxKind};
 use alloy_consensus::SignableTransaction;
 use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};
 use oskey_bus::proto;
-use alloc::vec;
 
 pub struct OSKeyTxEip2930 {
     pub tx: TxEip2930,
@@ -69,6 +69,11 @@ mod tests {
 
         let tx_hash = tx.hash();
 
-        assert_eq!(tx_hash, hex::decode("e8a4c5905197c0ebe135460219fd0f47381b17c91d1d28e51feca29980a10a69").unwrap().as_slice());
+        assert_eq!(
+            tx_hash,
+            hex::decode("e8a4c5905197c0ebe135460219fd0f47381b17c91d1d28e51feca29980a10a69")
+                .unwrap()
+                .as_slice()
+        );
     }
 }

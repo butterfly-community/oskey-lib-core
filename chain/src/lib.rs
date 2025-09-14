@@ -1,3 +1,3 @@
 #![no_std]
 #![allow(dead_code)]
-mod eth;
+pub mod eth;
