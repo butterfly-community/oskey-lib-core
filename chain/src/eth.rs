@@ -10,6 +10,21 @@ use anyhow::{anyhow, Result};
 use oskey_bus::proto;
 use core::fmt;
 
+pub struct OSKeyMsgSignEip191;
+
+impl OSKeyMsgSignEip191 {
+    const MESSAGE_PREFIX: &'static str = "\x19Ethereum Signed Message:\n";
+
+    pub fn hash_message(message: &[u8]) -> [u8; 32] {
+        let len = message.len().to_string();
+        let mut data = Vec::new();
+        data.extend_from_slice(Self::MESSAGE_PREFIX.as_bytes());
+        data.extend_from_slice(len.as_bytes());
+        data.extend_from_slice(message);
+        keccak256(&data).into()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OSKeyTxEip2930 {
     pub tx: TxEip2930,
@@ -147,5 +162,24 @@ mod tests {
         assert_eq!(display_map.get("input").unwrap(), "0x");
 
         std::println!("{}", tx);
+    }
+
+    #[test]
+    fn test_hash_message() {
+        let empty_hash = OSKeyMsgSignEip191::hash_message(b"");
+        assert_eq!(
+            hex::encode(empty_hash),
+            "5f35dce98ba4fba25530a026ed80b2cecdaa31091ba4958b99b52ea1d068adad"
+        );
+
+        let hello_hash = OSKeyMsgSignEip191::hash_message("hello world".as_bytes());
+        assert_eq!(
+            hex::encode(hello_hash),
+            "d9eba16ed0ecae432b71fe008c98cc872bb4cc214d3220a36f365326cf807d68"
+        );
+
+        let hello_bytes = b"hello world";
+        let hello_bytes_hash = OSKeyMsgSignEip191::hash_message(hello_bytes);
+        assert_eq!(hello_hash, hello_bytes_hash);
     }
 }
