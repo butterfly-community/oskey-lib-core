@@ -1,4 +1,6 @@
 extern crate alloc;
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use alloy_consensus::private::alloy_primitives::{keccak256, TxKind};
@@ -6,7 +8,9 @@ use alloy_consensus::SignableTransaction;
 use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};
 use oskey_bus::proto;
+use core::fmt;
 
+#[derive(Debug, Clone)]
 pub struct OSKeyTxEip2930 {
     pub tx: TxEip2930,
 }
@@ -42,16 +46,54 @@ impl OSKeyTxEip2930 {
         let rlp = self.rlp_encode();
         keccak256(&rlp).into()
     }
+
+    pub fn fields(&self) -> BTreeMap<String, String> {
+        let mut map = BTreeMap::new();
+
+        let to_address = match &self.tx.to {
+            TxKind::Call(addr) => "0x".to_string() + &hex::encode(addr.as_slice()),
+            TxKind::Create => "0x".to_string(),
+        };
+
+        let input_data = "0x".to_string() + &hex::encode(&self.tx.input);
+
+        insert_field!(map, self.tx, chain_id);
+        insert_field!(map, self.tx, nonce);
+        insert_field!(map, self.tx, gas_price);
+        insert_field!(map, self.tx, gas_limit);
+        insert_field!(map, self.tx, to, to_address);
+        insert_field!(map, self.tx, value);
+        insert_field!(map, self.tx, input, input_data);
+        map.insert(
+            "hash".to_string(),
+            "0x".to_string() + &hex::encode(self.hash()),
+        );
+
+        map
+    }
+}
+
+impl fmt::Display for OSKeyTxEip2930 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (key, value) in self.fields() {
+            f.write_str("\n")?;
+            f.write_str(&key)?;
+            f.write_str(":\n")?;
+            f.write_str(&value)?;
+            f.write_str("\n\n")?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use alloc::string::ToString;
-    use oskey_bus::proto;
 
     #[test]
-    fn test_eth_legacy_transaction() {
+    fn test_eth_eip2930_transaction() {
         let source = proto::AppEthTxEip2930 {
             chain_id: 0xaa36a7,
             nonce: 0x5,
@@ -75,5 +117,35 @@ mod tests {
                 .unwrap()
                 .as_slice()
         );
+    }
+
+    #[test]
+    fn test_display_methods() {
+        let source = proto::AppEthTxEip2930 {
+            chain_id: 0xaa36a7,
+            nonce: 0x5,
+            gas_price: "1112408".to_string(),
+            gas_limit: 0x5208,
+            to: Some("0x00Ab1EAd740f95aDE25b78B3137fdcC333326e7d".to_string()),
+            value: "0x16345785d8a0000".to_string(),
+            input: None,
+            access_list: None,
+        };
+
+        let tx = OSKeyTxEip2930::from_proto(source).unwrap();
+
+        let display_map = tx.fields();
+
+        assert_eq!(display_map.get("chain_id").unwrap(), "11155111");
+        assert_eq!(display_map.get("nonce").unwrap(), "5");
+        assert_eq!(display_map.get("gas_price").unwrap(), "1112408");
+        assert_eq!(display_map.get("gas_limit").unwrap(), "21000");
+        assert_eq!(
+            display_map.get("to").unwrap(),
+            "0x00ab1ead740f95ade25b78b3137fdcc333326e7d"
+        );
+        assert_eq!(display_map.get("input").unwrap(), "0x");
+
+        std::println!("{}", tx);
     }
 }
