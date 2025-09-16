@@ -163,7 +163,7 @@ pub fn wallet_sign_eth(
         oskey_wallet::wallets::Curve::K256,
     )?;
 
-    let proto::sign_eth_request::Tx::EipLegacyTx(source) =
+    let proto::sign_eth_request::Tx::Eip2930(source) =
         data.tx.ok_or(anyhow::anyhow!("No Tx Data"))?;
 
     let tx = OSKeyTxEip2930::from_proto(source)?;
@@ -419,8 +419,8 @@ mod tests {
                 id: 1,
                 path: String::from("m/44'/60'/0'/0/0"),
                 debug_text: None,
-                tx: Some(proto::sign_eth_request::Tx::EipLegacyTx(
-                    proto::AppEthLegacyTx {
+                tx: Some(proto::sign_eth_request::Tx::Eip2930(
+                    proto::AppEthTxEip2930 {
                         chain_id: 0xaa36a7,
                         nonce: 0x5,
                         gas_price: "1112408".to_string(),

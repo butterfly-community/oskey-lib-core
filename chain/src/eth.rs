@@ -12,7 +12,7 @@ pub struct OSKeyTxEip2930 {
 }
 
 impl OSKeyTxEip2930 {
-    pub fn from_proto(proto: proto::AppEthLegacyTx) -> Result<Self> {
+    pub fn from_proto(proto: proto::AppEthTxEip2930) -> Result<Self> {
         let tx = TxEip2930 {
             chain_id: proto.chain_id,
             nonce: proto.nonce,
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn test_eth_legacy_transaction() {
-        let source = proto::AppEthLegacyTx {
+        let source = proto::AppEthTxEip2930 {
             chain_id: 0xaa36a7,
             nonce: 0x5,
             gas_price: "1112408".to_string(),

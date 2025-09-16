@@ -102,12 +102,12 @@ message SignEthRequest
 	string path = 2;
 	oneof tx
 	{
-		AppEthLegacyTx eip_legacy_tx = 10;
+		AppEthTxEip2930 eip_2930 = 10;
 	}
 	optional string debug_text = 5;
 }
 
-message AppEthLegacyTx
+message AppEthTxEip2930
 {
 	uint64 chain_id = 1;
 	uint64 nonce = 2;
