@@ -5,7 +5,6 @@ use alloc::vec;
 use anyhow::Result;
 use core::ffi::CStr;
 use oskey_bus::{proto, proto::res_data};
-use oskey_chain::eth::OSKeyTxEip2930;
 use oskey_wallet::mnemonic;
 use oskey_wallet::wallets;
 
@@ -149,33 +148,26 @@ pub fn wallet_sign_msg(
     return Ok(payload);
 }
 
-pub fn wallet_sign_eth(
-    data: proto::SignEthRequest,
+pub fn wallet_sign_keccak256(
+    id: i32,
+    path: String,
+    hash: [u8; 32],
     seed_storage_cb: GetSeedStorageCallback,
-) -> Result<(res_data::Payload, OSKeyTxEip2930)> {
+) -> Result<res_data::Payload> {
     let mut buffer = vec![0u8; 64];
 
     seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
 
     let ex_priv_key = wallets::ExtendedPrivKey::derive(
         &buffer,
-        data.path.parse()?,
+        path.parse()?,
         oskey_wallet::wallets::Curve::K256,
     )?;
-
-    let source = match data.tx.ok_or(anyhow::anyhow!("No Tx Data"))? {
-        proto::sign_eth_request::Tx::Eip2930(tx) => tx,
-        _ => return Err(anyhow::anyhow!("Unsupported transaction type")),
-    };
-
-    let tx = OSKeyTxEip2930::from_proto(source)?;
-
-    let hash = tx.hash();
 
     let sign = ex_priv_key.sign(&hash)?;
 
     let data = proto::SignResponse {
-        id: data.id,
+        id: id,
         message: "".into(),
         public_key: ex_priv_key.export_pk()?.to_vec(),
         pre_hash: hash.to_vec(),
@@ -185,7 +177,7 @@ pub fn wallet_sign_eth(
 
     let payload = res_data::Payload::SignResponse(data);
 
-    return Ok((payload, tx));
+    return Ok(payload);
 }
 
 #[cfg(test)]
@@ -262,9 +254,10 @@ mod tests {
                 wallet_drive_public_key(data, get_seed_storage_cb)?
             }
             req_data::Payload::SignRequest(data) => wallet_sign_msg(data, get_seed_storage_cb)?,
-            req_data::Payload::SignEthRequest(data) => {
-                wallet_sign_eth(data, get_seed_storage_cb)?.0
-            }
+            // TODO: add test case
+            // req_data::Payload::SignEthRequest(data) => {
+            // }
+            _ => return Err(anyhow!("Not Implement")),
         };
 
         let response = proto::ResData {
