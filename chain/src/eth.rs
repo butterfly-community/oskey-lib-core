@@ -7,12 +7,12 @@ use alloy_consensus::private::alloy_primitives::{keccak256, TxKind};
 use alloy_consensus::SignableTransaction;
 use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};
-use oskey_bus::proto;
 use core::fmt;
+use oskey_bus::proto;
 
-pub struct OSKeyMsgSignEip191;
+pub struct OSKeyTxEip191;
 
-impl OSKeyMsgSignEip191 {
+impl OSKeyTxEip191 {
     const MESSAGE_PREFIX: &'static str = "\x19Ethereum Signed Message:\n";
 
     pub fn hash_message(message: &[u8]) -> [u8; 32] {
@@ -166,20 +166,20 @@ mod tests {
 
     #[test]
     fn test_hash_message() {
-        let empty_hash = OSKeyMsgSignEip191::hash_message(b"");
+        let empty_hash = OSKeyTxEip191::hash_message(b"");
         assert_eq!(
             hex::encode(empty_hash),
             "5f35dce98ba4fba25530a026ed80b2cecdaa31091ba4958b99b52ea1d068adad"
         );
 
-        let hello_hash = OSKeyMsgSignEip191::hash_message("hello world".as_bytes());
+        let hello_hash = OSKeyTxEip191::hash_message("hello world".as_bytes());
         assert_eq!(
             hex::encode(hello_hash),
             "d9eba16ed0ecae432b71fe008c98cc872bb4cc214d3220a36f365326cf807d68"
         );
 
         let hello_bytes = b"hello world";
-        let hello_bytes_hash = OSKeyMsgSignEip191::hash_message(hello_bytes);
+        let hello_bytes_hash = OSKeyTxEip191::hash_message(hello_bytes);
         assert_eq!(hello_hash, hello_bytes_hash);
     }
 }
