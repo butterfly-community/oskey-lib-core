@@ -2,6 +2,7 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec;
+use alloc::vec::Vec;
 use anyhow::Result;
 use core::ffi::CStr;
 use oskey_bus::{proto, proto::res_data};
@@ -19,6 +20,7 @@ pub fn wallet_unknown_req() -> res_data::Payload {
 }
 
 pub fn wallet_version_req(
+    support: Vec<u8>,
     version_cb: VersionCallback,
     check_init_cb: CheckInitCallback,
 ) -> res_data::Payload {
@@ -30,7 +32,7 @@ pub fn wallet_version_req(
 
     let features = oskey_bus::proto::Features {
         initialized: init_check,
-        has_hardware_random: true,
+        support_mask: support,
     };
 
     let version = oskey_bus::proto::VersionResponse {
@@ -213,7 +215,9 @@ mod tests {
     pub fn event_hub(req: oskey_bus::proto::ReqData) -> Result<proto::ResData> {
         let payload = match req.payload.ok_or(anyhow!("Fail"))? {
             req_data::Payload::Unknown(_unknown) => wallet_unknown_req(),
-            req_data::Payload::VersionRequest(_) => wallet_version_req(version_cb, check_init_cb),
+            req_data::Payload::VersionRequest(_) => {
+                wallet_version_req([0u8; 16].to_vec(), version_cb, check_init_cb)
+            }
             req_data::Payload::InitRequest(data) => {
                 wallet_init_default(data, random_cb, true, init_cb_no_password)?
             }
@@ -256,7 +260,7 @@ mod tests {
             version: String::from("1.0.0"),
             features: proto::Features {
                 initialized: true,
-                has_hardware_random: true,
+                support_mask: [0u8; 16].to_vec(),
             }
             .into(),
         });

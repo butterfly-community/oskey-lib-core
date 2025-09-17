@@ -19,11 +19,13 @@ message ResData
 {
 	oneof payload
 	{
+		ErrorResponse error_response = 1;
 		Unknown unknown = 2;
 		VersionResponse version_response = 11;
 		InitWalletResponse init_wallet_response = 31;
 		DerivePublicKeyResponse derive_public_key_response = 51;
 		SignResponse sign_response = 61;
+		WaitForUserActionResponse wait_for_user_action_response = 80;
 	}
 }
 
@@ -44,7 +46,7 @@ message VersionResponse
 message Features
 {
 	bool initialized = 10;
-	bool has_hardware_random = 20;
+	bytes support_mask = 20;
 }
 
 message InitWalletCustomRequest
@@ -76,16 +78,6 @@ message DerivePublicKeyResponse
 	bytes public_key = 2;
 }
 
-message SignResponse
-{
-	int32 id = 1;
-	bytes message = 2;
-	bytes public_key = 3;
-	bytes pre_hash = 4;
-	bytes signature = 5;
-	optional uint32 recovery_id = 6;
-}
-
 message SignEthRequest
 {
 	int32 id = 1;
@@ -114,4 +106,24 @@ message AppEthTxEip2930
 	string value = 6;
 	optional bytes input = 7;
 	optional bytes access_list = 8;
+}
+
+message SignResponse
+{
+	int32 id = 1;
+	bytes message = 2;
+	bytes public_key = 3;
+	bytes pre_hash = 4;
+	bytes signature = 5;
+	optional uint32 recovery_id = 6;
+}
+
+message ErrorResponse
+{
+	int32 code = 1;
+	string message = 2;
+}
+
+message WaitForUserActionResponse
+{
 }
