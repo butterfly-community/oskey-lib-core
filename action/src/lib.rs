@@ -163,8 +163,10 @@ pub fn wallet_sign_eth(
         oskey_wallet::wallets::Curve::K256,
     )?;
 
-    let proto::sign_eth_request::Tx::Eip2930(source) =
-        data.tx.ok_or(anyhow::anyhow!("No Tx Data"))?;
+    let source = match data.tx.ok_or(anyhow::anyhow!("No Tx Data"))? {
+        proto::sign_eth_request::Tx::Eip2930(tx) => tx,
+        _ => return Err(anyhow::anyhow!("Unsupported transaction type")),
+    };
 
     let tx = OSKeyTxEip2930::from_proto(source)?;
 

@@ -103,8 +103,15 @@ message SignEthRequest
 	oneof tx
 	{
 		AppEthTxEip2930 eip_2930 = 10;
+		AppEthMsgSign msg_sign = 20;
 	}
 	optional string debug_text = 5;
+}
+
+message AppEthMsgSign
+{
+	string message = 1;
+	optional bool is_personal = 2;
 }
 
 message AppEthTxEip2930
