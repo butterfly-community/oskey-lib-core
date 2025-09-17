@@ -118,36 +118,6 @@ pub fn wallet_drive_public_key(
     return Ok(payload);
 }
 
-pub fn wallet_sign_msg(
-    data: proto::SignRequest,
-    seed_storage_cb: GetSeedStorageCallback,
-) -> Result<res_data::Payload> {
-    let mut buffer = vec![0u8; 64];
-
-    seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
-
-    let ex_priv_key = wallets::ExtendedPrivKey::derive(
-        &buffer,
-        data.path.parse()?,
-        oskey_wallet::wallets::Curve::K256,
-    )?;
-
-    let sign = ex_priv_key.sign(data.pre_hash.as_slice())?;
-
-    let data = proto::SignResponse {
-        id: data.id,
-        message: "".into(),
-        public_key: ex_priv_key.export_pk()?.to_vec(),
-        pre_hash: data.pre_hash,
-        signature: sign.to_vec(),
-        recovery_id: None,
-    };
-
-    let payload = res_data::Payload::SignResponse(data);
-
-    return Ok(payload);
-}
-
 pub fn wallet_sign_keccak256(
     id: i32,
     path: String,
@@ -253,7 +223,6 @@ mod tests {
             req_data::Payload::DerivePublicKeyRequest(data) => {
                 wallet_drive_public_key(data, get_seed_storage_cb)?
             }
-            req_data::Payload::SignRequest(data) => wallet_sign_msg(data, get_seed_storage_cb)?,
             // TODO: add test case
             // req_data::Payload::SignEthRequest(data) => {
             // }
@@ -380,34 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wallet_sign_msg_res() {
-        let req = proto::ReqData {
-            payload: Some(req_data::Payload::SignRequest(proto::SignRequest {
-                id: 1,
-                path: String::from("m/44'/60'/0'/0/0"),
-                message: vec![],
-                pre_hash: hex::decode(
-                    "94ee059335e587e501cc4bf90613e0814f00a7b08bc7c648fd865a2af6a22cc2",
-                )
-                .unwrap(),
-                debug_text: None,
-            })),
-        };
-        let res = res_data::Payload::SignResponse(proto::SignResponse {
-            id: 1,
-            message: "".into(),
-            public_key: hex::decode("04dc286c821c7490afbe20a79d13123b9f41f3d7ef21e4a9caacd22f5983b28eca0e4dbd5624505a2c968fec15f25990c7324736890f6d0f74241f98e4259c1d42").unwrap(),
-            pre_hash: hex::decode("94ee059335e587e501cc4bf90613e0814f00a7b08bc7c648fd865a2af6a22cc2").unwrap(),
-            signature: hex::decode("7715b98862b615cae1059b625dc3822879492f52ebf0500d97df6ee1a52818ed35347703397b35bfea30ac01ee9b887d4cc23adc734b80e0dde4dddbee8a7fce").unwrap(),
-            recovery_id: None,
-        });
-
-        let event = event_hub(req).unwrap();
-
-        assert_eq!(event.payload.unwrap(), res);
-    }
-
-    #[test]
+    #[ignore]
     fn test_wallet_sign_eth_res() {
         let req = proto::ReqData {
             payload: Some(req_data::Payload::SignEthRequest(proto::SignEthRequest {

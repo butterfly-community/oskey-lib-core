@@ -11,7 +11,6 @@ message ReqData
 		InitWalletCustomRequest init_custom_request = 30;
 		InitWalletRequest init_request = 40;
 		DerivePublicKeyRequest derive_public_key_request = 50;
-		SignRequest sign_request = 60;
 		SignEthRequest sign_eth_request = 70;
 	}
 }
@@ -75,15 +74,6 @@ message DerivePublicKeyResponse
 {
 	string path = 1;
 	bytes public_key = 2;
-}
-
-message SignRequest
-{
-	int32 id = 1;
-	string path = 2;
-	bytes message = 3;
-	bytes pre_hash = 4;
-	optional string debug_text = 5;
 }
 
 message SignResponse
