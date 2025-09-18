@@ -3,7 +3,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use alloy_consensus::private::alloy_primitives::{keccak256, TxKind};
+use alloy_consensus::private::alloy_primitives::{keccak256, TxKind, eip191_hash_message};
 use alloy_consensus::SignableTransaction;
 use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};
@@ -13,15 +13,8 @@ use oskey_bus::proto;
 pub struct OSKeyTxEip191;
 
 impl OSKeyTxEip191 {
-    const MESSAGE_PREFIX: &'static str = "\x19Ethereum Signed Message:\n";
-
     pub fn hash_message(message: &[u8]) -> [u8; 32] {
-        let len = message.len().to_string();
-        let mut data = Vec::new();
-        data.extend_from_slice(Self::MESSAGE_PREFIX.as_bytes());
-        data.extend_from_slice(len.as_bytes());
-        data.extend_from_slice(message);
-        keccak256(&data).into()
+        eip191_hash_message(message).into()
     }
 }
 
@@ -70,7 +63,12 @@ impl OSKeyTxEip2930 {
             TxKind::Create => "0x".to_string(),
         };
 
-        let input_data = "0x".to_string() + &hex::encode(&self.tx.input);
+        let input_hex = hex::encode(&self.tx.input);
+        let input_data = if input_hex.len() > 1024 {
+            "0x".to_string() + &input_hex[..256] + "..."
+        } else {
+            "0x".to_string() + &input_hex
+        };
 
         insert_field!(map, self.tx, chain_id);
         insert_field!(map, self.tx, nonce);
