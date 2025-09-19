@@ -1,38 +1,80 @@
 #![no_std]
+#![allow(static_mut_refs)]
 extern crate alloc;
+use crate::proto::ReqData;
 use alloc::vec::Vec;
-
 use anyhow::Result;
+use prost::DecodeError;
 pub use prost::Message;
 
 pub mod proto {
     include!("proto/ohw.rs");
 }
 
-pub struct FrameParser {}
+pub struct FrameParser {
+    pub buffer: Vec<u8>,
+}
 
 impl FrameParser {
     const MAGIC: &'static [u8] = "₿".as_bytes();
     const HEADER_LEN: usize = Self::MAGIC.len() + 2;
 
-    pub fn unpack(buffer: &[u8]) -> Result<Option<Vec<u8>>> {
-        if !buffer.starts_with(Self::MAGIC) {
-            anyhow::bail!("Magic header fail!");
+    pub fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+
+    pub fn add(&mut self, data: &[u8]) -> Option<Result<ReqData, DecodeError>> {
+        self.buffer.extend_from_slice(data);
+        if self.check() == false {
+            return None;
+        }
+        return self.unpack();
+    }
+
+    pub fn check(&mut self) -> bool {
+
+        if self.buffer.len() < Self::HEADER_LEN {
+            return false;
         }
 
-        if buffer.len() < Self::HEADER_LEN {
-            return Ok(None);
+        if !self.buffer.starts_with(Self::MAGIC) && !self.buffer.is_empty() {
+            if let Some(pos) = self
+                .buffer
+                .windows(Self::MAGIC.len())
+                .position(|window| window == Self::MAGIC)
+            {
+                self.buffer.drain(..pos);
+            }
         }
 
-        let payload_len = u16::from_be_bytes([buffer[3], buffer[4]]) as usize;
+        if self.buffer.len() < Self::HEADER_LEN || !self.buffer.starts_with(Self::MAGIC) {
+            return false;
+        }
+        return true;
+    }
 
-        if buffer.len() < Self::HEADER_LEN + payload_len {
-            return Ok(None);
+    pub fn unpack(&mut self) -> Option<Result<ReqData, DecodeError>> {
+        let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
+
+        if self.buffer.len() < Self::HEADER_LEN + payload_len {
+            return None;
         }
 
-        Ok(Some(
-            buffer[Self::HEADER_LEN..Self::HEADER_LEN + payload_len].to_vec(),
-        ))
+        let frame_len = Self::HEADER_LEN + payload_len;
+
+        let decoded = proto::ReqData::decode(&self.buffer[Self::HEADER_LEN..frame_len]);
+
+        self.buffer.drain(..frame_len);
+
+        if self.buffer.is_empty() {
+            self.clear();
+        }
+        Some(decoded)
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.buffer.shrink_to_fit();
     }
 
     pub fn pack(data: &[u8]) -> Vec<u8> {
@@ -45,15 +87,20 @@ impl FrameParser {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     extern crate alloc;
+    use crate::proto::VersionRequest;
+
     use super::*;
     use anyhow::{anyhow, Ok, Result};
     use prost::Message;
-    use proto::{res_data::Payload, Features, ResData, VersionResponse};
+    use proto::{
+        req_data::Payload as ReqPayload, res_data::Payload as ResPayload, Features, ReqData,
+        ResData, VersionResponse,
+    };
 
-    fn get_test_payload_bytes() -> Vec<u8> {
-        let payload = Payload::VersionResponse(VersionResponse {
+    fn get_test_res_payload_bytes() -> Vec<u8> {
+        let payload = ResPayload::VersionResponse(VersionResponse {
             version: "1.0.0".into(),
             features: { Features::default() }.into(),
         });
@@ -67,13 +114,25 @@ mod test {
         return bytes;
     }
 
+    fn get_test_req_payload_bytes() -> Vec<u8> {
+        let payload = ReqPayload::VersionRequest(VersionRequest {});
+
+        let response = ReqData {
+            payload: payload.into(),
+        };
+
+        let bytes = response.encode_to_vec();
+
+        return bytes;
+    }
+
     #[test]
     fn test_version() -> Result<()> {
-        let bytes = get_test_payload_bytes();
+        let bytes = get_test_res_payload_bytes();
 
         let decoded_response = proto::ResData::decode(bytes.as_slice()).map_err(|e| anyhow!(e))?;
 
-        if let Payload::VersionResponse(resp) =
+        if let ResPayload::VersionResponse(resp) =
             decoded_response.payload.ok_or(anyhow!("Decode Error"))?
         {
             assert_eq!(resp.version, "1.0.0");
@@ -86,39 +145,39 @@ mod test {
 
     #[test]
     fn test_frame() -> Result<()> {
-        let bytes = get_test_payload_bytes();
+        let bytes = get_test_req_payload_bytes();
 
         let frame = FrameParser::pack(&bytes);
-        let payload = FrameParser::unpack(&frame)?.unwrap();
 
-        assert_eq!(payload, bytes);
+        let payload = FrameParser::new()
+            .add(&frame)
+            .ok_or(anyhow!("No frame"))?
+            .map_err(|e| anyhow!(e))?;
 
-        let mut invalid_header = frame.clone();
-        invalid_header[0] = b'x';
-        assert!(FrameParser::unpack(&invalid_header).is_err());
-
-        let short_frame = &frame.clone()[..frame.len() - 1];
-        assert!(FrameParser::unpack(short_frame).is_ok());
+        assert_eq!(payload.encode_to_vec(), bytes);
 
         Ok(())
     }
 
     #[test]
-    fn test_frame_with_proto() -> Result<()> {
-        let bytes = get_test_payload_bytes();
+    fn test_invalid_frame() -> Result<()> {
+        let bytes = get_test_req_payload_bytes();
 
         let frame = FrameParser::pack(&bytes);
 
-        let data = FrameParser::unpack(&frame)?.unwrap();
+        let mut invalid_header = frame.clone();
+        invalid_header[0] = b'x';
+        let mut parser_1 = FrameParser::new();
+        parser_1.add(&invalid_header);
+        assert_eq!(parser_1.buffer.len(), frame.len());
+        let test = parser_1.add(&frame);
+        assert!(test.is_some());
 
-        let decoded_msg = ResData::decode(data.as_slice()).map_err(|e| anyhow!(e))?;
-
-        if let Some(Payload::VersionResponse(resp)) = decoded_msg.payload {
-            assert_eq!(resp.version, "1.0.0");
-        } else {
-            anyhow::bail!("Payload mismatch");
-        }
-
+        let short_frame = &frame.clone()[..frame.len() - 1];
+        let mut parser_2 = FrameParser::new();
+        let req_2 = parser_2.add(short_frame);
+        assert!(req_2.is_none());
+        assert_eq!(parser_2.buffer.len(), frame.len() - 1);
         Ok(())
     }
 }
