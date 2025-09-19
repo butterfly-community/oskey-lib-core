@@ -9,7 +9,7 @@ use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};
 use core::fmt;
 use oskey_bus::proto;
-
+use alloc::format;
 pub struct OSKeyTxEip191;
 
 impl OSKeyTxEip191 {
@@ -63,11 +63,10 @@ impl OSKeyTxEip2930 {
             TxKind::Create => "0x".to_string(),
         };
 
-        let input_hex = hex::encode(&self.tx.input);
-        let input_data = if input_hex.len() > 10240 {
-            "0x".to_string() + &input_hex[..10240] + "..."
+        let input_data = if self.tx.input.len() > 512 {
+            format!("0x{}...", hex::encode(&self.tx.input[..512]))
         } else {
-            "0x".to_string() + &input_hex
+            format!("0x{}", hex::encode(&self.tx.input))
         };
 
         insert_field!(map, self.tx, chain_id);
