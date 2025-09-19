@@ -64,8 +64,8 @@ impl OSKeyTxEip2930 {
         };
 
         let input_hex = hex::encode(&self.tx.input);
-        let input_data = if input_hex.len() > 1024 {
-            "0x".to_string() + &input_hex[..256] + "..."
+        let input_data = if input_hex.len() > 10240 {
+            "0x".to_string() + &input_hex[..10240] + "..."
         } else {
             "0x".to_string() + &input_hex
         };

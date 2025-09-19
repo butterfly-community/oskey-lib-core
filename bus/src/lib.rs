@@ -23,12 +23,17 @@ impl FrameParser {
         Self { buffer: Vec::new() }
     }
 
-    pub fn add(&mut self, data: &[u8]) -> Option<Result<ReqData>> {
+    pub fn push(&mut self, data: &[u8]) -> Option<Result<ReqData>> {
         self.buffer.extend_from_slice(data);
         if self.check() == false {
             return None;
         }
         return self.unpack();
+    }
+
+    pub fn push_check(&mut self, data: &[u8]) -> bool {
+        self.buffer.extend_from_slice(data);
+        return self.check();
     }
 
     pub fn check(&mut self) -> bool {
@@ -53,10 +58,21 @@ impl FrameParser {
         if self.buffer.len() < Self::HEADER_LEN || !self.buffer.starts_with(Self::MAGIC) {
             return false;
         }
+
+        let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
+
+        if self.buffer.len() < Self::HEADER_LEN + payload_len {
+            return false;
+        }
+
         return true;
     }
 
     pub fn unpack(&mut self) -> Option<Result<ReqData>> {
+        if !self.check() {
+            return None;
+        }
+
         let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
 
         if self.buffer.len() < Self::HEADER_LEN + payload_len {
@@ -153,7 +169,7 @@ mod tests {
         let frame = FrameParser::pack(&bytes);
 
         let payload = FrameParser::new()
-            .add(&frame)
+            .push(&frame)
             .ok_or(anyhow!("No frame"))?
             .map_err(|e| anyhow!(e))?;
 
@@ -171,16 +187,66 @@ mod tests {
         let mut invalid_header = frame.clone();
         invalid_header[0] = b'x';
         let mut parser_1 = FrameParser::new();
-        parser_1.add(&invalid_header);
+        parser_1.push(&invalid_header);
         assert_eq!(parser_1.buffer.len(), frame.len());
-        let test = parser_1.add(&frame);
+        let test = parser_1.push(&frame);
         assert!(test.is_some());
 
         let short_frame = &frame.clone()[..frame.len() - 1];
         let mut parser_2 = FrameParser::new();
-        let req_2 = parser_2.add(short_frame);
+        let req_2 = parser_2.push(short_frame);
         assert!(req_2.is_none());
         assert_eq!(parser_2.buffer.len(), frame.len() - 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_partial_frame() -> Result<()> {
+        let bytes = get_test_req_payload_bytes();
+        let frame = FrameParser::pack(&bytes);
+
+        let mut parser = FrameParser::new();
+
+        let mid = frame.len() / 2;
+        let part1 = &frame[..mid];
+        let part2 = &frame[mid..];
+
+        let req_1 = parser.push(part1);
+        assert!(req_1.is_none());
+        assert_eq!(parser.buffer.len(), part1.len());
+
+        let req_2 = parser.push(part2);
+        assert!(req_2.is_some());
+        assert_eq!(parser.buffer.len(), 0);
+
+        let payload = req_2.unwrap().map_err(|e| anyhow!(e))?;
+        assert_eq!(payload.encode_to_vec(), bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_check_after_partial() -> Result<()> {
+        let bytes = get_test_req_payload_bytes();
+        let frame = FrameParser::pack(&bytes);
+
+        let mut parser = FrameParser::new();
+
+        let mid = frame.len() / 2;
+        let part1 = &frame[..mid];
+        let part2 = &frame[mid..];
+
+        let check_1 = parser.push_check(part1);
+        assert!(!check_1);
+        assert_eq!(parser.buffer.len(), part1.len());
+
+        let check_2 = parser.push_check(part2);
+        assert!(check_2);
+        assert_eq!(parser.buffer.len(), frame.len());
+
+        let req = parser.unpack();
+        assert!(req.is_some());
+        let payload = req.unwrap().map_err(|e| anyhow!(e))?;
+        assert_eq!(payload.encode_to_vec(), bytes);
         Ok(())
     }
 }
