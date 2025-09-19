@@ -3,7 +3,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use alloy_consensus::private::alloy_primitives::{keccak256, TxKind, eip191_hash_message};
+use alloy_consensus::private::alloy_primitives::{eip191_hash_message, keccak256, TxKind};
 use alloy_consensus::SignableTransaction;
 use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};

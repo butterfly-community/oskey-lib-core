@@ -3,8 +3,8 @@
 extern crate alloc;
 use crate::proto::ReqData;
 use alloc::vec::Vec;
+use anyhow::anyhow;
 use anyhow::Result;
-use prost::DecodeError;
 pub use prost::Message;
 
 pub mod proto {
@@ -19,11 +19,11 @@ impl FrameParser {
     const MAGIC: &'static [u8] = "₿".as_bytes();
     const HEADER_LEN: usize = Self::MAGIC.len() + 2;
 
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { buffer: Vec::new() }
     }
 
-    pub fn add(&mut self, data: &[u8]) -> Option<Result<ReqData, DecodeError>> {
+    pub fn add(&mut self, data: &[u8]) -> Option<Result<ReqData>> {
         self.buffer.extend_from_slice(data);
         if self.check() == false {
             return None;
@@ -32,7 +32,6 @@ impl FrameParser {
     }
 
     pub fn check(&mut self) -> bool {
-
         if self.buffer.len() < Self::HEADER_LEN {
             return false;
         }
@@ -44,6 +43,10 @@ impl FrameParser {
                 .position(|window| window == Self::MAGIC)
             {
                 self.buffer.drain(..pos);
+            } else {
+                if self.buffer.len() > 64 {
+                    self.clear();
+                }
             }
         }
 
@@ -53,7 +56,7 @@ impl FrameParser {
         return true;
     }
 
-    pub fn unpack(&mut self) -> Option<Result<ReqData, DecodeError>> {
+    pub fn unpack(&mut self) -> Option<Result<ReqData>> {
         let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
 
         if self.buffer.len() < Self::HEADER_LEN + payload_len {
@@ -69,7 +72,7 @@ impl FrameParser {
         if self.buffer.is_empty() {
             self.clear();
         }
-        Some(decoded)
+        Some(decoded.map_err(|e| anyhow!(e)))
     }
 
     pub fn clear(&mut self) {
