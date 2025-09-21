@@ -18,6 +18,7 @@ crypto-rs = [
   "dep:k256",
   "dep:ed25519-dalek",
   "dep:x25519-dalek",
+  "dep:chacha20poly1305",
 ]
 build = []
 
@@ -41,6 +42,7 @@ ed25519-dalek = { version = "2.1", default-features = false, optional = true }
 x25519-dalek = { version = "2.0.1", default-features = false, features = [
   "static_secrets",
 ], optional = true }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"], optional = true }
 
 
 [dev-dependencies]

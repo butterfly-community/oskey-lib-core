@@ -1,5 +1,6 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -9,7 +10,6 @@ use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};
 use core::fmt;
 use oskey_bus::proto;
-use alloc::format;
 pub struct OSKeyTxEip191;
 
 impl OSKeyTxEip191 {

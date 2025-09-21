@@ -4,6 +4,7 @@ use anyhow::{anyhow, bail, Ok, Result};
 use heapless::Vec;
 #[cfg(feature = "crypto-rs")]
 use {
+    chacha20poly1305::ChaCha20Poly1305,
     ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey},
     hmac::{Hmac, Mac},
     k256::{
@@ -23,6 +24,7 @@ pub struct K256;
 pub struct Ed25519;
 pub struct Curve25519;
 pub struct P256;
+pub struct ChaCha20Poly1305Cipher;
 
 #[derive(Debug, Clone)]
 pub struct K256AppSignature {
@@ -347,6 +349,134 @@ impl Curve25519 {
     }
 }
 
+impl ChaCha20Poly1305Cipher {
+    #[cfg(feature = "crypto-rs")]
+    pub fn encrypt(
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        plaintext: &[u8],
+    ) -> Result<heapless::Vec<u8, 1024>> {
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            Key, Nonce,
+        };
+
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+        let nonce = Nonce::from_slice(nonce);
+
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+
+        let mut result = heapless::Vec::new();
+        for byte in ciphertext {
+            result
+                .push(byte)
+                .map_err(|_| anyhow!("Result buffer too small"))?;
+        }
+
+        Ok(result)
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn encrypt(
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        plaintext: &[u8],
+    ) -> Result<heapless::Vec<u8, 1024>> {
+        let mut ciphertext = [0u8; 1024];
+        let mut ciphertext_len = 0usize;
+
+        let status = unsafe {
+            bindings::psa_chacha20poly1305_encrypt(
+                key.as_ptr(),
+                nonce.as_ptr(),
+                plaintext.as_ptr(),
+                plaintext.len(),
+                ciphertext.as_mut_ptr(),
+                ciphertext.len(),
+                &mut ciphertext_len as *mut usize,
+            )
+        };
+
+        if status != 0 {
+            anyhow::bail!("ChaCha20Poly1305 encryption failed with status: {}", status);
+        }
+
+        let mut result = heapless::Vec::new();
+        for i in 0..ciphertext_len {
+            result
+                .push(ciphertext[i])
+                .map_err(|_| anyhow!("Result buffer too small"))?;
+        }
+
+        Ok(result)
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn decrypt(
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+    ) -> Result<heapless::Vec<u8, 1024>> {
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            Key, Nonce,
+        };
+
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+        let nonce = Nonce::from_slice(nonce);
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| anyhow!("Decryption failed: {}", e))?;
+
+        let mut result = heapless::Vec::new();
+        for byte in plaintext {
+            result
+                .push(byte)
+                .map_err(|_| anyhow!("Result buffer too small"))?;
+        }
+
+        Ok(result)
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn decrypt(
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+    ) -> Result<heapless::Vec<u8, 1024>> {
+        let mut plaintext = [0u8; 1024];
+        let mut plaintext_len = 0usize;
+
+        let status = unsafe {
+            bindings::psa_chacha20poly1305_decrypt(
+                key.as_ptr(),
+                nonce.as_ptr(),
+                ciphertext.as_ptr(),
+                ciphertext.len(),
+                plaintext.as_mut_ptr(),
+                plaintext.len(),
+                &mut plaintext_len as *mut usize,
+            )
+        };
+
+        if status != 0 {
+            anyhow::bail!("ChaCha20Poly1305 decryption failed with status: {}", status);
+        }
+
+        let mut result = heapless::Vec::new();
+        for i in 0..plaintext_len {
+            result
+                .push(plaintext[i])
+                .map_err(|_| anyhow!("Result buffer too small"))?;
+        }
+
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate alloc;
@@ -496,5 +626,47 @@ mod tests {
                 .unwrap();
 
         assert_eq!(pk.as_slice(), expected_pk.as_slice());
+    }
+
+    #[test]
+    fn test_chacha20poly1305_encrypt_decrypt() {
+        let key = [
+            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d,
+            0x8e, 0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b,
+            0x9c, 0x9d, 0x9e, 0x9f,
+        ];
+        let nonce = [
+            0x07, 0x00, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+        ];
+        let plaintext = b"Hello, ChaCha20Poly1305!";
+
+        let ciphertext = ChaCha20Poly1305Cipher::encrypt(&key, &nonce, plaintext).unwrap();
+        assert!(ciphertext.len() > plaintext.len());
+
+        let decrypted = ChaCha20Poly1305Cipher::decrypt(&key, &nonce, &ciphertext).unwrap();
+        assert_eq!(decrypted.as_slice(), plaintext);
+    }
+
+    #[test]
+    fn test_chacha20poly1305_empty_data() {
+        let key = [0u8; 32];
+        let nonce = [0u8; 12];
+        let plaintext = b"";
+
+        let ciphertext = ChaCha20Poly1305Cipher::encrypt(&key, &nonce, plaintext).unwrap();
+        let decrypted = ChaCha20Poly1305Cipher::decrypt(&key, &nonce, &ciphertext).unwrap();
+        assert_eq!(decrypted.as_slice(), plaintext);
+    }
+
+    #[test]
+    fn test_chacha20poly1305_wrong_nonce() {
+        let key = [1u8; 32];
+        let nonce1 = [1u8; 12];
+        let nonce2 = [2u8; 12];
+        let plaintext = b"Test message";
+
+        let ciphertext = ChaCha20Poly1305Cipher::encrypt(&key, &nonce1, plaintext).unwrap();
+        let result = ChaCha20Poly1305Cipher::decrypt(&key, &nonce2, &ciphertext);
+        assert!(result.is_err());
     }
 }

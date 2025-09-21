@@ -8,5 +8,6 @@
 #include "k256.h"
 #include "ed25519.h"
 #include "x25519.h"
+#include "chacha20poly1305.h"
 
 #endif

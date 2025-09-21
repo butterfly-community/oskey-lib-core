@@ -278,3 +278,25 @@ unsafe extern "C" {
         out33: *mut u8,
     ) -> ::core::ffi::c_int;
 }
+unsafe extern "C" {
+    pub fn psa_chacha20poly1305_encrypt(
+        key: *const u8,
+        nonce: *const u8,
+        plaintext: *const u8,
+        plaintext_len: usize,
+        ciphertext: *mut u8,
+        ciphertext_size: usize,
+        ciphertext_len: *mut usize,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn psa_chacha20poly1305_decrypt(
+        key: *const u8,
+        nonce: *const u8,
+        ciphertext: *const u8,
+        ciphertext_len: usize,
+        plaintext: *mut u8,
+        plaintext_size: usize,
+        plaintext_len: *mut usize,
+    ) -> i32;
+}
