@@ -8,6 +8,7 @@ message ReqData
 	{
 		Unknown unknown = 2;
 		VersionRequest version_request = 10;
+		StatusRequest status_request = 20;
 		InitWalletCustomRequest init_custom_request = 30;
 		InitWalletRequest init_request = 40;
 		DerivePublicKeyRequest derive_public_key_request = 50;
@@ -22,6 +23,7 @@ message ResData
 		ErrorResponse error_response = 1;
 		Unknown unknown = 2;
 		VersionResponse version_response = 11;
+		StatusResponse status_response = 21;
 		InitWalletResponse init_wallet_response = 31;
 		DerivePublicKeyResponse derive_public_key_response = 51;
 		SignResponse sign_response = 61;
@@ -47,6 +49,15 @@ message Features
 {
 	bool initialized = 10;
 	bytes support_mask = 20;
+}
+
+message StatusRequest
+{
+}
+
+message StatusResponse
+{
+	bytes status_mask = 1;
 }
 
 message InitWalletCustomRequest
