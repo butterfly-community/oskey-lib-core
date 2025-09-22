@@ -354,7 +354,7 @@ impl ChaCha20Poly1305Cipher {
     pub fn encrypt(
         key: &[u8; 32],
         nonce: &[u8; 12],
-        plaintext: &[u8],
+        bytes: &[u8],
     ) -> Result<heapless::Vec<u8, 1024>> {
         use chacha20poly1305::{
             aead::{Aead, KeyInit},
@@ -365,7 +365,7 @@ impl ChaCha20Poly1305Cipher {
         let nonce = Nonce::from_slice(nonce);
 
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(nonce, bytes)
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
         let mut result = heapless::Vec::new();
@@ -382,7 +382,7 @@ impl ChaCha20Poly1305Cipher {
     pub fn encrypt(
         key: &[u8; 32],
         nonce: &[u8; 12],
-        plaintext: &[u8],
+        bytes: &[u8],
     ) -> Result<heapless::Vec<u8, 1024>> {
         let mut ciphertext = [0u8; 1024];
         let mut ciphertext_len = 0usize;
@@ -391,8 +391,8 @@ impl ChaCha20Poly1305Cipher {
             bindings::psa_chacha20poly1305_encrypt(
                 key.as_ptr(),
                 nonce.as_ptr(),
-                plaintext.as_ptr(),
-                plaintext.len(),
+                bytes.as_ptr(),
+                bytes.len(),
                 ciphertext.as_mut_ptr(),
                 ciphertext.len(),
                 &mut ciphertext_len as *mut usize,
@@ -427,12 +427,12 @@ impl ChaCha20Poly1305Cipher {
         let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
         let nonce = Nonce::from_slice(nonce);
 
-        let plaintext = cipher
+        let bytes = cipher
             .decrypt(nonce, ciphertext)
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
         let mut result = heapless::Vec::new();
-        for byte in plaintext {
+        for byte in bytes {
             result
                 .push(byte)
                 .map_err(|_| anyhow!("Result buffer too small"))?;
@@ -447,8 +447,8 @@ impl ChaCha20Poly1305Cipher {
         nonce: &[u8; 12],
         ciphertext: &[u8],
     ) -> Result<heapless::Vec<u8, 1024>> {
-        let mut plaintext = [0u8; 1024];
-        let mut plaintext_len = 0usize;
+        let mut bytes = [0u8; 1024];
+        let mut bytes_len = 0usize;
 
         let status = unsafe {
             bindings::psa_chacha20poly1305_decrypt(
@@ -456,9 +456,9 @@ impl ChaCha20Poly1305Cipher {
                 nonce.as_ptr(),
                 ciphertext.as_ptr(),
                 ciphertext.len(),
-                plaintext.as_mut_ptr(),
-                plaintext.len(),
-                &mut plaintext_len as *mut usize,
+                bytes.as_mut_ptr(),
+                bytes.len(),
+                &mut bytes_len as *mut usize,
             )
         };
 
@@ -467,9 +467,9 @@ impl ChaCha20Poly1305Cipher {
         }
 
         let mut result = heapless::Vec::new();
-        for i in 0..plaintext_len {
+        for i in 0..bytes_len {
             result
-                .push(plaintext[i])
+                .push(bytes[i])
                 .map_err(|_| anyhow!("Result buffer too small"))?;
         }
 
