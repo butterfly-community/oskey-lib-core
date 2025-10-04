@@ -1,155 +1,118 @@
 #![no_std]
 extern crate alloc;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 use anyhow::Result;
-use core::ffi::CStr;
 use oskey_bus::{proto, proto::res_data};
 use oskey_wallet::mnemonic;
 use oskey_wallet::wallets;
 
-pub type VersionCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
-pub type CheckInitCallback = extern "C" fn() -> bool;
-pub type RandomCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
-pub type InitCallback = extern "C" fn(data: *const u8, len: usize, phrase_len: usize) -> bool;
-pub type GetSeedStorageCallback = extern "C" fn(data: *mut u8, len: usize) -> bool;
-
-pub fn wallet_unknown_req() -> res_data::Payload {
-    return res_data::Payload::Unknown(proto::Unknown {});
+pub trait WalletCallbacks {
+    fn version(&self) -> String;
+    fn initialized(&self) -> bool;
+    fn support_mask(&self) -> Vec<u8>;
+    fn random(&self, len: usize) -> Vec<u8>;
+    fn save_seed(&self, seed: &[u8], phrase_len: usize) -> Result<()>;
+    fn load_seed(&self) -> Vec<u8>;
 }
 
-pub fn wallet_version_req(
-    support: Vec<u8>,
-    version_cb: VersionCallback,
-    check_init_cb: CheckInitCallback,
-) -> res_data::Payload {
-    let mut buffer = vec![0u8; 10];
-
-    version_cb(buffer.as_mut_ptr(), buffer.len());
-
-    let init_check = check_init_cb();
-
-    let features = oskey_bus::proto::Features {
-        initialized: init_check,
-        support_mask: support,
-    };
-
-    let version = oskey_bus::proto::VersionResponse {
-        version: String::from(
-            CStr::from_bytes_until_nul(&buffer)
-                .unwrap_or(CStr::from_bytes_with_nul(b"unknown\0").unwrap())
-                .to_str()
-                .unwrap_or("unknown"),
-        ),
-        features: features.into(),
-    };
-
-    let payload = res_data::Payload::VersionResponse(version);
-    return payload;
+pub fn handle_unknown() -> res_data::Payload {
+    res_data::Payload::Unknown(proto::Unknown {})
 }
 
-pub fn wallet_init_default(
+pub fn handle_version<C: WalletCallbacks>(callbacks: &C) -> res_data::Payload {
+    res_data::Payload::VersionResponse(oskey_bus::proto::VersionResponse {
+        version: callbacks.version(),
+        features: oskey_bus::proto::Features {
+            initialized: callbacks.initialized(),
+            support_mask: callbacks.support_mask(),
+        }
+        .into(),
+    })
+}
+
+pub fn handle_init_wallet<C: WalletCallbacks>(
     data: proto::InitWalletRequest,
-    random_cb: RandomCallback,
+    callbacks: &C,
     save_seed: bool,
-    init_cb: InitCallback,
 ) -> Result<res_data::Payload> {
     let need_len = data.length as usize * 4 / 3;
-
-    let mut buffer = vec![0u8; need_len];
-
-    random_cb(buffer.as_mut_ptr(), need_len);
-
+    let buffer = callbacks.random(need_len);
     let mnemonic = mnemonic::Mnemonic::from_entropy(&buffer)?;
 
     if save_seed {
         let seed = mnemonic.to_seed(&data.password)?;
-        init_cb(seed.as_ptr(), seed.len(), data.length as usize);
+        callbacks.save_seed(&seed, data.length as usize)?;
     }
 
     //TODO: only debug return mnemonic msg.
-    let init = proto::InitWalletResponse {
+    let response = proto::InitWalletResponse {
         mnemonic: mnemonic.words.join(" ").into(),
     };
 
-    return Ok(res_data::Payload::InitWalletResponse(init));
+    Ok(res_data::Payload::InitWalletResponse(response))
 }
 
-pub fn wallet_init_custom(
+pub fn handle_init_wallet_custom<C: WalletCallbacks>(
     data: proto::InitWalletCustomRequest,
-    init_cb: InitCallback,
+    callbacks: &C,
 ) -> Result<res_data::Payload> {
     let mnemonic = mnemonic::Mnemonic::from_phrase(&data.words)?;
     let seed = mnemonic.to_seed(&data.password)?;
 
-    init_cb(seed.as_ptr(), seed.len(), mnemonic.words.len() as usize);
+    callbacks.save_seed(&seed, mnemonic.words.len())?;
+
     //TODO: only debug return mnemonic msg.
-    let init = proto::InitWalletResponse {
+    let response = proto::InitWalletResponse {
         mnemonic: mnemonic.words.join(" ").into(),
     };
 
-    let payload = res_data::Payload::InitWalletResponse(init);
-
-    return Ok(payload);
+    Ok(res_data::Payload::InitWalletResponse(response))
 }
 
-pub fn wallet_drive_public_key(
+fn derive_extended_key<C: WalletCallbacks>(
+    callbacks: &C,
+    path: &str,
+) -> Result<wallets::ExtendedPrivKey> {
+    let buffer = callbacks.load_seed();
+    wallets::ExtendedPrivKey::derive(&buffer, path.parse()?, oskey_wallet::wallets::Curve::K256)
+}
+
+pub fn handle_derive_public_key<C: WalletCallbacks>(
     data: proto::DerivePublicKeyRequest,
-    seed_storage_cb: GetSeedStorageCallback,
+    callbacks: &C,
 ) -> Result<res_data::Payload> {
-    let mut buffer = vec![0u8; 64];
-
-    seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
-
-    let ex_priv_key = wallets::ExtendedPrivKey::derive(
-        &buffer,
-        data.path.parse()?,
-        oskey_wallet::wallets::Curve::K256,
-    )?;
-
+    let ex_priv_key = derive_extended_key(callbacks, &data.path)?;
     let pk = ex_priv_key.export_pk()?;
 
-    let data = proto::DerivePublicKeyResponse {
+    let response = proto::DerivePublicKeyResponse {
         path: data.path,
         public_key: pk.to_vec(),
     };
 
-    let payload = res_data::Payload::DerivePublicKeyResponse(data);
-
-    return Ok(payload);
+    Ok(res_data::Payload::DerivePublicKeyResponse(response))
 }
 
-pub fn wallet_sign_keccak256(
+pub fn handle_sign_keccak256<C: WalletCallbacks>(
     id: i32,
-    path: String,
+    path: &str,
     hash: [u8; 32],
-    seed_storage_cb: GetSeedStorageCallback,
+    callbacks: &C,
 ) -> Result<res_data::Payload> {
-    let mut buffer = vec![0u8; 64];
-
-    seed_storage_cb(buffer.as_mut_ptr(), buffer.len());
-
-    let ex_priv_key = wallets::ExtendedPrivKey::derive(
-        &buffer,
-        path.parse()?,
-        oskey_wallet::wallets::Curve::K256,
-    )?;
-
+    let ex_priv_key = derive_extended_key(callbacks, path)?;
+    let public_key = ex_priv_key.export_pk()?.to_vec();
     let sign = ex_priv_key.sign(&hash)?;
 
-    let data = proto::SignResponse {
-        id: id,
+    let response = proto::SignResponse {
+        id,
         message: "".into(),
-        public_key: ex_priv_key.export_pk()?.to_vec(),
+        public_key,
         pre_hash: hash.to_vec(),
         signature: sign.to_vec(),
         recovery_id: None,
     };
 
-    let payload = res_data::Payload::SignResponse(data);
-
-    return Ok(payload);
+    Ok(res_data::Payload::SignResponse(response))
 }
 
 #[cfg(test)]
@@ -159,73 +122,57 @@ mod tests {
     use anyhow::{anyhow, Result};
     use oskey_bus::proto::req_data;
 
-    extern "C" fn version_cb(data: *mut u8, len: usize) -> bool {
-        let version = b"1.0.0";
-        unsafe {
-            if len >= version.len() {
-                core::ptr::copy_nonoverlapping(version.as_ptr(), data, version.len());
-            } else {
-                return false;
-            }
+    struct TestCallbacks;
+
+    impl WalletCallbacks for TestCallbacks {
+        fn version(&self) -> String {
+            String::from("1.0.0")
         }
-        true
-    }
 
-    extern "C" fn check_init_cb() -> bool {
-        true
-    }
-
-    extern "C" fn random_cb(data: *mut u8, len: usize) -> bool {
-        let random =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
-                .unwrap();
-        if len <= random.len() {
-            unsafe {
-                core::ptr::copy_nonoverlapping(random.as_ptr(), data, len);
-            }
+        fn initialized(&self) -> bool {
             true
-        } else {
-            false
-        }
-    }
-
-    extern "C" fn init_cb_no_password(data: *const u8, len: usize, phrase_len: usize) -> bool {
-        let seed = unsafe { core::slice::from_raw_parts(data, len) };
-
-        if phrase_len == 12 {
-            let test = hex::decode("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").unwrap();
-            assert_eq!(seed, test.as_slice());
         }
 
-        if phrase_len == 24 {
-            let test2 = hex::decode("408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840").unwrap();
-            assert_eq!(seed, test2.as_slice());
+        fn support_mask(&self) -> Vec<u8> {
+            [0u8; 16].to_vec()
         }
-        true
-    }
 
-    extern "C" fn get_seed_storage_cb(data: *mut u8, len: usize) -> bool {
-        let seed = hex::decode("408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840").unwrap();
-        unsafe {
-            core::ptr::copy_nonoverlapping(seed.as_ptr(), data, len);
+        fn random(&self, len: usize) -> Vec<u8> {
+            let random =
+                hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap();
+            random[..len].to_vec()
         }
-        true
+
+        fn save_seed(&self, seed: &[u8], phrase_len: usize) -> Result<()> {
+            if phrase_len == 12 {
+                let test = hex::decode("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").unwrap();
+                assert_eq!(seed, test.as_slice());
+            }
+
+            if phrase_len == 24 {
+                let test2 = hex::decode("408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840").unwrap();
+                assert_eq!(seed, test2.as_slice());
+            }
+            Ok(())
+        }
+
+        fn load_seed(&self) -> Vec<u8> {
+            hex::decode("408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840").unwrap()
+        }
     }
 
     pub fn event_hub(req: oskey_bus::proto::ReqData) -> Result<proto::ResData> {
+        let callbacks = TestCallbacks;
         let payload = match req.payload.ok_or(anyhow!("Fail"))? {
-            req_data::Payload::Unknown(_unknown) => wallet_unknown_req(),
-            req_data::Payload::VersionRequest(_) => {
-                wallet_version_req([0u8; 16].to_vec(), version_cb, check_init_cb)
-            }
-            req_data::Payload::InitRequest(data) => {
-                wallet_init_default(data, random_cb, true, init_cb_no_password)?
-            }
+            req_data::Payload::Unknown(_unknown) => handle_unknown(),
+            req_data::Payload::VersionRequest(_) => handle_version(&callbacks),
+            req_data::Payload::InitRequest(data) => handle_init_wallet(data, &callbacks, true)?,
             req_data::Payload::InitCustomRequest(data) => {
-                wallet_init_custom(data, init_cb_no_password)?
+                handle_init_wallet_custom(data, &callbacks)?
             }
             req_data::Payload::DerivePublicKeyRequest(data) => {
-                wallet_drive_public_key(data, get_seed_storage_cb)?
+                handle_derive_public_key(data, &callbacks)?
             }
             // TODO: add test case
             // req_data::Payload::SignEthRequest(data) => {
@@ -233,11 +180,9 @@ mod tests {
             _ => return Err(anyhow!("Not Implement")),
         };
 
-        let response = proto::ResData {
+        Ok(proto::ResData {
             payload: payload.into(),
-        };
-
-        Ok(response)
+        })
     }
 
     #[test]
@@ -245,7 +190,7 @@ mod tests {
         let req = proto::ReqData {
             payload: Some(req_data::Payload::Unknown(proto::Unknown {})),
         };
-        let res = wallet_unknown_req();
+        let res = handle_unknown();
         let event = event_hub(req).unwrap();
         assert_eq!(event.payload.unwrap(), res);
     }
