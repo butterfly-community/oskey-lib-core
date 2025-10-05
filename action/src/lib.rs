@@ -2,8 +2,10 @@
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use anyhow::anyhow;
 use anyhow::Result;
 use oskey_bus::{proto, proto::res_data};
+use oskey_chain::eth::OSKeyTxEip2930;
 use oskey_wallet::mnemonic;
 use oskey_wallet::wallets;
 
@@ -11,6 +13,7 @@ pub trait WalletCallbacks {
     fn version(&self) -> String;
     fn initialized(&self) -> bool;
     fn support_mask(&self) -> Vec<u8>;
+    fn status_mask(&self) -> Vec<u8>;
     fn random(&self, len: usize) -> Vec<u8>;
     fn save_seed(&self, seed: &[u8], phrase_len: usize) -> Result<()>;
     fn load_seed(&self) -> Vec<u8>;
@@ -31,6 +34,12 @@ pub fn handle_version<C: WalletCallbacks>(callbacks: &C) -> res_data::Payload {
     })
 }
 
+pub fn handle_status<C: WalletCallbacks>(callbacks: &C) -> res_data::Payload {
+    res_data::Payload::StatusResponse(proto::StatusResponse {
+        status_mask: callbacks.status_mask(),
+    })
+}
+
 pub fn handle_init_wallet<C: WalletCallbacks>(
     data: proto::InitWalletRequest,
     callbacks: &C,
@@ -45,7 +54,6 @@ pub fn handle_init_wallet<C: WalletCallbacks>(
         callbacks.save_seed(&seed, data.length as usize)?;
     }
 
-    //TODO: only debug return mnemonic msg.
     let response = proto::InitWalletResponse {
         mnemonic: mnemonic.words.join(" ").into(),
     };
@@ -62,7 +70,6 @@ pub fn handle_init_wallet_custom<C: WalletCallbacks>(
 
     callbacks.save_seed(&seed, mnemonic.words.len())?;
 
-    //TODO: only debug return mnemonic msg.
     let response = proto::InitWalletResponse {
         mnemonic: mnemonic.words.join(" ").into(),
     };
@@ -70,20 +77,17 @@ pub fn handle_init_wallet_custom<C: WalletCallbacks>(
     Ok(res_data::Payload::InitWalletResponse(response))
 }
 
-fn derive_extended_key<C: WalletCallbacks>(
-    callbacks: &C,
-    path: &str,
-) -> Result<wallets::ExtendedPrivKey> {
-    let buffer = callbacks.load_seed();
-    wallets::ExtendedPrivKey::derive(&buffer, path.parse()?, oskey_wallet::wallets::Curve::K256)
-}
-
 pub fn handle_derive_public_key<C: WalletCallbacks>(
     data: proto::DerivePublicKeyRequest,
     callbacks: &C,
 ) -> Result<res_data::Payload> {
-    let ex_priv_key = derive_extended_key(callbacks, &data.path)?;
-    let pk = ex_priv_key.export_pk()?;
+    let buffer = callbacks.load_seed();
+    let pk = wallets::ExtendedPrivKey::derive(
+        &buffer,
+        data.path.parse()?,
+        oskey_wallet::wallets::Curve::K256,
+    )?
+    .export_pk()?;
 
     let response = proto::DerivePublicKeyResponse {
         path: data.path,
@@ -93,14 +97,43 @@ pub fn handle_derive_public_key<C: WalletCallbacks>(
     Ok(res_data::Payload::DerivePublicKeyResponse(response))
 }
 
-pub fn handle_sign_keccak256<C: WalletCallbacks>(
+pub fn handle_sign_eth<C: WalletCallbacks>(
+    data: proto::SignEthRequest,
+    callbacks: &C,
+) -> Result<res_data::Payload> {
+    let tx = data.tx.ok_or(anyhow!("Tx Not found"))?;
+
+    let hash = match tx {
+        proto::sign_eth_request::Tx::Eip2930(app_eth_tx_eip2930) => {
+            let tx = OSKeyTxEip2930::from_proto(app_eth_tx_eip2930)?;
+            tx.hash()
+        }
+        proto::sign_eth_request::Tx::Eip191(app_eth_msg_sign) => {
+            let message = app_eth_msg_sign.message;
+            let hash = oskey_chain::eth::OSKeyTxEip191::hash_message(message.as_bytes());
+            hash
+        }
+    };
+
+    handle_sign_keccak256(data.id, &data.path, hash, callbacks)
+}
+
+fn handle_sign_keccak256<C: WalletCallbacks>(
     id: i32,
     path: &str,
     hash: [u8; 32],
     callbacks: &C,
 ) -> Result<res_data::Payload> {
-    let ex_priv_key = derive_extended_key(callbacks, path)?;
+    let buffer = callbacks.load_seed();
+
+    let ex_priv_key = wallets::ExtendedPrivKey::derive(
+        &buffer,
+        path.parse()?,
+        oskey_wallet::wallets::Curve::K256,
+    )?;
+
     let public_key = ex_priv_key.export_pk()?.to_vec();
+
     let sign = ex_priv_key.sign(&hash)?;
 
     let response = proto::SignResponse {
@@ -134,6 +167,10 @@ mod tests {
         }
 
         fn support_mask(&self) -> Vec<u8> {
+            [0u8; 16].to_vec()
+        }
+
+        fn status_mask(&self) -> Vec<u8> {
             [0u8; 16].to_vec()
         }
 
@@ -175,8 +212,6 @@ mod tests {
                 handle_derive_public_key(data, &callbacks)?
             }
             // TODO: add test case
-            // req_data::Payload::SignEthRequest(data) => {
-            // }
             _ => return Err(anyhow!("Not Implement")),
         };
 

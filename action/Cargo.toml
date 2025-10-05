@@ -6,7 +6,7 @@ description = ""
 license = ""
 
 [features]
-default = ["crypto-rs"]
+default = ["crypto-link"]
 crypto-rs = ["oskey-wallet/crypto-rs"]
 crypto-psa = ["oskey-wallet/crypto-psa"]
 crypto-link = ["oskey-wallet/crypto-psa", "oskey-wallet/build"]
