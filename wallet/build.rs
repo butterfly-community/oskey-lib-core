@@ -21,8 +21,11 @@ fn main() {
     println!("cargo:rustc-link-lib=static=mbedcrypto");
     println!("cargo:rustc-link-lib=static=mbedx509");
 
+    let target = std::env::var("TARGET").unwrap();
+
     bindgen::Builder::default()
         .headers(["psa/wrapper.h"])
+        .clang_arg(format!("--target={}", target))
         .use_core()
         .derive_debug(true)
         .generate_comments(true)
