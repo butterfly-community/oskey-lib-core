@@ -11,6 +11,7 @@ use oskey_wallet::wallets;
 
 pub trait WalletCallbacks {
     fn version(&self) -> String;
+    fn sn(&self) -> String;
     fn initialized(&self) -> bool;
     fn support_mask(&self) -> Vec<u8>;
     fn status_mask(&self) -> Vec<u8>;
@@ -31,6 +32,7 @@ pub fn handle_version<C: WalletCallbacks>(callbacks: &C) -> res_data::Payload {
             support_mask: callbacks.support_mask(),
         }
         .into(),
+        sn: callbacks.sn(),
     })
 }
 
@@ -162,6 +164,10 @@ mod tests {
             String::from("1.0.0")
         }
 
+        fn sn(&self) -> String {
+            String::from("XXXXXXXX")
+        }
+
         fn initialized(&self) -> bool {
             true
         }
@@ -243,6 +249,7 @@ mod tests {
                 support_mask: [0u8; 16].to_vec(),
             }
             .into(),
+            sn: "XXXXXXXX".into(),
         });
 
         let event = event_hub(req).unwrap();

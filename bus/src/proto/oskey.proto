@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package ohw;
+package oskey;
 
 message ReqData
 {
@@ -44,6 +44,7 @@ message VersionResponse
 {
 	string version = 1;
 	Features features = 2;
+	string sn = 3;
 }
 
 message Features

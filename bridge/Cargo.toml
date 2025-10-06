@@ -6,3 +6,7 @@ description = ""
 license = ""
 
 [dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+anyhow ={ version = "1" }
+serialport = { version = "4", features = ["usbportinfo-interface"]}

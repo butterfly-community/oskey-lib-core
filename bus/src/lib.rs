@@ -8,7 +8,7 @@ use anyhow::Result;
 pub use prost::Message;
 
 pub mod proto {
-    include!("proto/ohw.rs");
+    include!("proto/oskey.rs");
 }
 
 pub struct FrameParser {
@@ -122,6 +122,7 @@ mod tests {
         let payload = ResPayload::VersionResponse(VersionResponse {
             version: "1.0.0".into(),
             features: { Features::default() }.into(),
+            sn: "XXXXXXXX".into(),
         });
 
         let response = ResData {

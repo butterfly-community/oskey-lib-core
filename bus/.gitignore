@@ -1,4 +1,4 @@
 build
 .vscode
 target
-src/proto/ohw.rs
+src/proto/oskey.rs
