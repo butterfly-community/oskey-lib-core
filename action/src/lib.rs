@@ -63,6 +63,20 @@ pub fn handle_init_wallet<C: WalletCallbacks>(
     Ok(res_data::Payload::InitWalletResponse(response))
 }
 
+pub fn handle_init_wallet_custom_entropy<C: WalletCallbacks>(
+    data: proto::InitWalletRequest,
+) -> Result<res_data::Payload> {
+    let entropy = data.seed.ok_or(anyhow!("Entropy Not found"))?;
+
+    let mnemonic = mnemonic::Mnemonic::from_entropy(entropy.as_slice())?;
+
+    let response = proto::InitWalletResponse {
+        mnemonic: mnemonic.words.join(" ").into(),
+    };
+
+    Ok(res_data::Payload::InitWalletResponse(response))
+}
+
 pub fn handle_init_wallet_custom<C: WalletCallbacks>(
     data: proto::InitWalletCustomRequest,
     callbacks: &C,
