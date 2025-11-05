@@ -15,7 +15,7 @@ add_compile_options(
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/psa/CMakeLists.txt)
 
-target_link_libraries(crypto STATIC MbedTLS::mbedtls MbedTLS::mbedcrypto MbedTLS::mbedx509)
+target_link_libraries(crypto PUBLIC MbedTLS::mbedtls MbedTLS::mbedcrypto MbedTLS::mbedx509)
 
 install(
     TARGETS crypto

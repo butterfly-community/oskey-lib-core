@@ -63,7 +63,7 @@ pub fn handle_init_wallet<C: WalletCallbacks>(
     Ok(res_data::Payload::InitWalletResponse(response))
 }
 
-pub fn handle_init_wallet_custom_entropy<C: WalletCallbacks>(
+pub fn handle_init_wallet_custom_entropy(
     data: proto::InitWalletRequest,
 ) -> Result<res_data::Payload> {
     let entropy = data.seed.ok_or(anyhow!("Entropy Not found"))?;
