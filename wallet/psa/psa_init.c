@@ -9,7 +9,9 @@ int psa_crypto_init_once(void)
 	}
 
 	psa_status_t st = psa_crypto_init();
-	inited = 1;
+	if (st == PSA_SUCCESS) {
+		inited = 1;
+	}
 
 	return st;
 }
