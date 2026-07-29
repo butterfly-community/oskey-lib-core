@@ -1,6 +1,7 @@
 #![no_std]
-#![allow(static_mut_refs)]
+
 extern crate alloc;
+
 use crate::proto::ReqData;
 use alloc::vec::Vec;
 use anyhow::anyhow;
@@ -12,7 +13,13 @@ pub mod proto {
 }
 
 pub struct FrameParser {
-    pub buffer: Vec<u8>,
+    buffer: Vec<u8>,
+}
+
+impl Default for FrameParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FrameParser {
@@ -23,20 +30,12 @@ impl FrameParser {
         Self { buffer: Vec::new() }
     }
 
-    pub fn push(&mut self, data: &[u8]) -> Option<Result<ReqData>> {
+    pub fn push(&mut self, data: &[u8]) {
+        // TODO: Add a bounded or streaming parser without rejecting large wallet messages.
         self.buffer.extend_from_slice(data);
-        if self.check() == false {
-            return None;
-        }
-        return self.unpack();
     }
 
-    pub fn push_check(&mut self, data: &[u8]) -> bool {
-        self.buffer.extend_from_slice(data);
-        return self.check();
-    }
-
-    pub fn check(&mut self) -> bool {
+    fn check(&mut self) -> bool {
         if self.buffer.len() < Self::HEADER_LEN {
             return false;
         }
@@ -48,10 +47,8 @@ impl FrameParser {
                 .position(|window| window == Self::MAGIC)
             {
                 self.buffer.drain(..pos);
-            } else {
-                if self.buffer.len() > 64 {
-                    self.clear();
-                }
+            } else if self.buffer.len() > 64 {
+                self.buffer.clear();
             }
         }
 
@@ -61,11 +58,7 @@ impl FrameParser {
 
         let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
 
-        if self.buffer.len() < Self::HEADER_LEN + payload_len {
-            return false;
-        }
-
-        return true;
+        self.buffer.len() >= Self::HEADER_LEN + payload_len
     }
 
     pub fn unpack(&mut self) -> Option<Result<ReqData>> {
@@ -74,26 +67,12 @@ impl FrameParser {
         }
 
         let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
-
-        if self.buffer.len() < Self::HEADER_LEN + payload_len {
-            return None;
-        }
-
         let frame_len = Self::HEADER_LEN + payload_len;
 
         let decoded = proto::ReqData::decode(&self.buffer[Self::HEADER_LEN..frame_len]);
 
         self.buffer.drain(..frame_len);
-
-        if self.buffer.is_empty() {
-            self.clear();
-        }
         Some(decoded.map_err(|e| anyhow!(e)))
-    }
-
-    pub fn clear(&mut self) {
-        self.buffer.clear();
-        self.buffer.shrink_to_fit();
     }
 
     pub fn pack(data: &[u8]) -> Vec<u8> {
@@ -129,9 +108,7 @@ mod tests {
             payload: payload.into(),
         };
 
-        let bytes = response.encode_to_vec();
-
-        return bytes;
+        response.encode_to_vec()
     }
 
     fn get_test_req_payload_bytes() -> Vec<u8> {
@@ -141,9 +118,7 @@ mod tests {
             payload: payload.into(),
         };
 
-        let bytes = response.encode_to_vec();
-
-        return bytes;
+        response.encode_to_vec()
     }
 
     #[test]
@@ -169,8 +144,10 @@ mod tests {
 
         let frame = FrameParser::pack(&bytes);
 
-        let payload = FrameParser::new()
-            .push(&frame)
+        let mut parser = FrameParser::new();
+        parser.push(&frame);
+        let payload = parser
+            .unpack()
             .ok_or(anyhow!("No frame"))?
             .map_err(|e| anyhow!(e))?;
 
@@ -189,13 +166,16 @@ mod tests {
         invalid_header[0] = b'x';
         let mut parser_1 = FrameParser::new();
         parser_1.push(&invalid_header);
+        assert!(parser_1.unpack().is_none());
         assert_eq!(parser_1.buffer.len(), frame.len());
-        let test = parser_1.push(&frame);
+        parser_1.push(&frame);
+        let test = parser_1.unpack();
         assert!(test.is_some());
 
         let short_frame = &frame.clone()[..frame.len() - 1];
         let mut parser_2 = FrameParser::new();
-        let req_2 = parser_2.push(short_frame);
+        parser_2.push(short_frame);
+        let req_2 = parser_2.unpack();
         assert!(req_2.is_none());
         assert_eq!(parser_2.buffer.len(), frame.len() - 1);
         Ok(())
@@ -212,11 +192,13 @@ mod tests {
         let part1 = &frame[..mid];
         let part2 = &frame[mid..];
 
-        let req_1 = parser.push(part1);
+        parser.push(part1);
+        let req_1 = parser.unpack();
         assert!(req_1.is_none());
         assert_eq!(parser.buffer.len(), part1.len());
 
-        let req_2 = parser.push(part2);
+        parser.push(part2);
+        let req_2 = parser.unpack();
         assert!(req_2.is_some());
         assert_eq!(parser.buffer.len(), 0);
 
@@ -226,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn test_push_check_after_partial() -> Result<()> {
+    fn test_unpack_after_partial() -> Result<()> {
         let bytes = get_test_req_payload_bytes();
         let frame = FrameParser::pack(&bytes);
 
@@ -236,12 +218,11 @@ mod tests {
         let part1 = &frame[..mid];
         let part2 = &frame[mid..];
 
-        let check_1 = parser.push_check(part1);
-        assert!(!check_1);
+        parser.push(part1);
+        assert!(parser.unpack().is_none());
         assert_eq!(parser.buffer.len(), part1.len());
 
-        let check_2 = parser.push_check(part2);
-        assert!(check_2);
+        parser.push(part2);
         assert_eq!(parser.buffer.len(), frame.len());
 
         let req = parser.unpack();
