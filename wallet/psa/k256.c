@@ -144,11 +144,10 @@ int32_t psa_k256_sign_hash(const uint8_t *private_key, const uint8_t *hash, size
 
 	status = psa_sign_hash(key_id, PSA_ALG_DETERMINISTIC_ECDSA(PSA_ALG_SHA_256), hash,
 			       hash_length, signature, 64, &signature_length);
-	if (status != PSA_SUCCESS) {
-		return status;
+	if (status == PSA_SUCCESS) {
+		psa_normalize_signature(signature);
 	}
 
-	psa_normalize_signature(signature);
 	psa_destroy_key(key_id);
 	return status;
 }

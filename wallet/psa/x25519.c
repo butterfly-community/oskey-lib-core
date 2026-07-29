@@ -1,4 +1,3 @@
-#include <psa/crypto.h>
 #include "x25519.h"
 #include <string.h>
 #include "compact25519.h"
