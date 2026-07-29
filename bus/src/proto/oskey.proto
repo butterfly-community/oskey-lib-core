@@ -10,10 +10,14 @@ message ReqData
 		VersionRequest version_request = 10;
 		StatusRequest status_request = 20;
 		UnlockRequest unlock_request = 25;
+		LockRequest lock_request = 26;
 		InitWalletCustomRequest init_custom_request = 30;
 		InitWalletRequest init_request = 40;
+		GenerateMnemonicRequest generate_mnemonic_request = 41;
 		DerivePublicKeyRequest derive_public_key_request = 50;
 		SignEthRequest sign_eth_request = 70;
+		UserActionRequest user_action_request = 81;
+		DeviceRequest device_request = 82;
 	}
 }
 
@@ -29,6 +33,8 @@ message ResData
 		DerivePublicKeyResponse derive_public_key_response = 51;
 		SignResponse sign_response = 61;
 		WaitForUserActionResponse wait_for_user_action_response = 80;
+		DisplayResponse display_response = 90;
+		UserActionPrompt user_action_prompt = 91;
 	}
 }
 
@@ -65,6 +71,11 @@ message StatusResponse
 message UnlockRequest
 {
 	bytes hash = 1;
+	optional string pin_text = 2;
+}
+
+message LockRequest
+{
 }
 
 message InitWalletCustomRequest
@@ -72,6 +83,7 @@ message InitWalletCustomRequest
 	string words = 2;
 	string password = 3;
 	bytes pin = 4;
+	optional string pin_text = 5;
 }
 
 message InitWalletRequest
@@ -80,6 +92,13 @@ message InitWalletRequest
 	string password = 2;
 	optional bytes seed = 3;
 	bytes pin = 4;
+	optional string pin_text = 5;
+}
+
+message GenerateMnemonicRequest
+{
+	uint32 length = 1;
+	optional bytes entropy = 2;
 }
 
 message InitWalletResponse
@@ -146,4 +165,48 @@ message ErrorResponse
 
 message WaitForUserActionResponse
 {
+}
+
+enum UserAction
+{
+	USER_ACTION_UNSPECIFIED = 0;
+	USER_ACTION_APPROVE = 1;
+	USER_ACTION_REJECT = 2;
+}
+
+message UserActionRequest
+{
+	UserAction action = 1;
+}
+
+enum DisplayAction
+{
+	DISPLAY_ACTION_UNSPECIFIED = 0;
+	DISPLAY_ACTION_READY = 1;
+	DISPLAY_ACTION_MNEMONIC = 2;
+	DISPLAY_ACTION_SIGN = 3;
+	DISPLAY_ACTION_ERROR = 4;
+}
+
+message DisplayResponse
+{
+	DisplayAction action = 1;
+	string text = 2;
+}
+
+message UserActionPrompt
+{
+	bool active = 1;
+}
+
+enum DeviceAction
+{
+	DEVICE_ACTION_UNSPECIFIED = 0;
+	DEVICE_ACTION_RESTART = 1;
+	DEVICE_ACTION_RESET_STORAGE = 2;
+}
+
+message DeviceRequest
+{
+	DeviceAction action = 1;
 }

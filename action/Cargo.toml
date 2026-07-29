@@ -16,6 +16,7 @@ anyhow = { version = "1.0", default-features = false }
 oskey-bus = { package = "oskey-bus", path = "../bus" }
 oskey-wallet = { package = "oskey-wallet", path = "../wallet" }
 oskey-chain = { package = "oskey-chain", path = "../chain" }
+zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
