@@ -8,10 +8,7 @@ fn main() {
     let dst = Config::new("./").build();
 
     println!("cargo:rustc-link-search=native={}", dst.display());
-    println!(
-        "cargo:rustc-link-search=native={}",
-        "/home/linuxbrew/.linuxbrew/lib"
-    );
+    println!("cargo:rustc-link-search=native=/home/linuxbrew/.linuxbrew/lib");
     println!("cargo:rustc-link-lib=static=crypto");
 
     println!("cargo:rustc-link-search=native=/usr/local/lib/");

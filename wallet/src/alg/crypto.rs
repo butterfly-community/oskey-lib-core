@@ -241,7 +241,7 @@ impl K256 {
         let result = K256AppSignature {
             public_key: Self::export_pk(sk_bytes)?,
             pre_hash: data.try_into()?,
-            signature: result.try_into()?,
+            signature: result,
             recovery_id: None,
         };
         Ok(result)
@@ -365,6 +365,7 @@ impl P256 {
     }
 }
 
+#[cfg(feature = "crypto-psa")]
 fn ecdsa_signature_to_der(signature: &[u8; 64]) -> Result<Vec<u8, 72>> {
     fn integer(value: &[u8]) -> (&[u8], bool) {
         let first = value
@@ -550,11 +551,9 @@ impl ChaCha20Poly1305Cipher {
         }
 
         let mut result = heapless::Vec::new();
-        for i in 0..ciphertext_len {
-            result
-                .push(ciphertext[i])
-                .map_err(|_| anyhow!("Result buffer too small"))?;
-        }
+        result
+            .extend_from_slice(&ciphertext[..ciphertext_len])
+            .map_err(|_| anyhow!("Result buffer too small"))?;
 
         Ok(result)
     }
@@ -609,11 +608,9 @@ impl ChaCha20Poly1305Cipher {
         }
 
         let mut result = heapless::Vec::new();
-        for i in 0..bytes_len {
-            result
-                .push(bytes[i])
-                .map_err(|_| anyhow!("Result buffer too small"))?;
-        }
+        result
+            .extend_from_slice(&bytes[..bytes_len])
+            .map_err(|_| anyhow!("Result buffer too small"))?;
 
         Ok(result)
     }
@@ -743,6 +740,7 @@ mod tests {
         assert_eq!(pk, pk_hex.as_slice());
     }
 
+    #[test]
     fn test_ed25519_export_pk_2() {
         let sk = hex::decode("F0B6D86308082BB3DA1CA59D854B729D456956F0486D836F28375747E07BB313")
             .unwrap();

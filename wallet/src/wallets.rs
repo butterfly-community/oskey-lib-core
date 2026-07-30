@@ -23,6 +23,7 @@ impl Curve {
             Curve::P256 => b"Nist256p1 seed",
         }
     }
+    #[cfg(test)]
     fn version_bytes(&self, is_public: bool) -> [u8; 4] {
         match (self, is_public) {
             (Curve::K256, false) => [0x04, 0x88, 0xAD, 0xE4],
