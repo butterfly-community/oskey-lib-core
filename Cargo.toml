@@ -23,6 +23,7 @@ pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 hmac = { version = "0.13", default-features = false }
 ripemd = { version = "0.2", default-features = false }
 k256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 ed25519-dalek = { version = "3.0", default-features = false }
 x25519-dalek = { version = "3.0", default-features = false, features = ["static_secrets"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }

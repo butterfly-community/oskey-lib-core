@@ -16,6 +16,7 @@ crypto-rs = [
   "dep:hmac",
   "dep:ripemd",
   "dep:k256",
+  "dep:p256",
   "dep:ed25519-dalek",
   "dep:x25519-dalek",
   "dep:chacha20poly1305",
@@ -26,12 +27,14 @@ build = ["dep:bindgen", "dep:cmake"]
 anyhow.workspace = true
 bit-vec.workspace = true
 heapless.workspace = true
+zeroize.workspace = true
 
 sha2 = { workspace = true, optional = true }
 pbkdf2 = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 ripemd = { workspace = true, optional = true }
 k256 = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 x25519-dalek = { workspace = true, optional = true }
 chacha20poly1305 = { workspace = true, optional = true }

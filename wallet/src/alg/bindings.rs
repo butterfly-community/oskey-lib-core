@@ -261,6 +261,30 @@ unsafe extern "C" {
     ) -> i32;
 }
 unsafe extern "C" {
+    pub fn psa_p256_validate_key(private_key: *const u8) -> ::core::ffi::c_int;
+}
+unsafe extern "C" {
+    pub fn psa_p256_add_num(
+        num1: *const u8,
+        num2: *const u8,
+        result: *mut u8,
+    ) -> ::core::ffi::c_int;
+}
+unsafe extern "C" {
+    pub fn psa_p256_derive_pk(private_key: *const u8, public_key: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn psa_p256_derive_pk_uncompressed(private_key: *const u8, public_key: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn psa_p256_sign_hash(
+        private_key: *const u8,
+        hash: *const u8,
+        hash_length: usize,
+        signature: *mut u8,
+    ) -> i32;
+}
+unsafe extern "C" {
     pub fn psa_ed25519_export_pk_from_seed(seed32: *const u8, out33: *mut u8)
     -> ::core::ffi::c_int;
 }

@@ -11,6 +11,13 @@ use {
         ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToSec1Point,
         SecretKey as K256SecretKey,
     },
+    p256::{
+        ecdsa::{
+            signature::hazmat::PrehashSigner, Signature as P256Signature,
+            SigningKey as P256SigningKey,
+        },
+        SecretKey as P256SecretKey,
+    },
     pbkdf2::pbkdf2_hmac,
     ripemd::Ripemd160,
     sha2::{Digest, Sha256, Sha512},
@@ -32,12 +39,6 @@ pub struct K256AppSignature {
     pub pre_hash: [u8; 32],
     pub signature: [u8; 64],
     pub recovery_id: Option<u8>,
-}
-
-#[derive(Debug, Clone)]
-pub struct P256AppSignature {
-    pub public_key: [u8; 65],
-    pub signature: Vec<u8, 72>,
 }
 
 impl Hash {
@@ -194,7 +195,7 @@ impl K256 {
             .to_nonzero_scalar()
             .add(&sk2.to_nonzero_scalar())
             .to_bytes();
-        Ok(new_secret_key.try_into()?)
+        Ok(new_secret_key.into())
     }
 
     #[cfg(feature = "crypto-psa")]
@@ -218,8 +219,8 @@ impl K256 {
         let result = K256AppSignature {
             public_key: Self::export_pk(sk_bytes)?,
             pre_hash: data.try_into()?,
-            signature: signature.0.to_bytes().try_into()?,
-            recovery_id: signature.1.to_byte().try_into()?,
+            signature: signature.0.to_bytes().into(),
+            recovery_id: signature.1.to_byte().into(),
         };
         Ok(result)
     }
@@ -245,6 +246,157 @@ impl K256 {
         };
         Ok(result)
     }
+}
+
+impl P256 {
+    #[cfg(feature = "crypto-rs")]
+    pub fn validate_key(key: &[u8]) -> bool {
+        P256SecretKey::from_slice(key).is_ok()
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn validate_key(key: &[u8]) -> bool {
+        key.len() == 32 && unsafe { bindings::psa_p256_validate_key(key.as_ptr()) } == 0
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn export_pk_compressed(key: &[u8]) -> Result<[u8; 33]> {
+        let key = P256SecretKey::from_slice(key).map_err(|e| anyhow!(e))?;
+        Ok(key.public_key().to_sec1_point(true).as_bytes().try_into()?)
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn export_pk_compressed(key: &[u8]) -> Result<[u8; 33]> {
+        if key.len() != 32 {
+            bail!("Private key must contain 32 bytes");
+        }
+        let mut public_key = [0; 33];
+        let status = unsafe { bindings::psa_p256_derive_pk(key.as_ptr(), public_key.as_mut_ptr()) };
+        if status == 0 {
+            Ok(public_key)
+        } else {
+            bail!("{}", status)
+        }
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn export_pk(key: &[u8]) -> Result<[u8; 65]> {
+        let key = P256SecretKey::from_slice(key).map_err(|e| anyhow!(e))?;
+        Ok(key
+            .public_key()
+            .to_sec1_point(false)
+            .as_bytes()
+            .try_into()?)
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn export_pk(key: &[u8]) -> Result<[u8; 65]> {
+        if key.len() != 32 {
+            bail!("Private key must contain 32 bytes");
+        }
+        let mut public_key = [0; 65];
+        let status = unsafe {
+            bindings::psa_p256_derive_pk_uncompressed(key.as_ptr(), public_key.as_mut_ptr())
+        };
+        if status == 0 {
+            Ok(public_key)
+        } else {
+            bail!("{}", status)
+        }
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn tweak_key(parent: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
+        use p256::elliptic_curve::{Field, PrimeField};
+        use p256::{FieldBytes, Scalar};
+
+        let parent = P256SecretKey::from_slice(parent).map_err(|e| anyhow!(e))?;
+        let tweak: FieldBytes = tweak.try_into()?;
+        let tweak = Option::<Scalar>::from(Scalar::from_repr(tweak))
+            .ok_or_else(|| anyhow!("Invalid P-256 tweak"))?;
+        let child = *parent.to_nonzero_scalar().as_ref() + tweak;
+        if bool::from(child.is_zero()) {
+            bail!("Invalid P-256 child key");
+        }
+        Ok(child.to_bytes().into())
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn tweak_key(parent: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
+        if parent.len() != 32 || tweak.len() != 32 {
+            bail!("P-256 scalars must contain 32 bytes");
+        }
+        let mut child = [0; 32];
+        let status = unsafe {
+            bindings::psa_p256_add_num(parent.as_ptr(), tweak.as_ptr(), child.as_mut_ptr())
+        };
+        if status == 0 {
+            Ok(child)
+        } else {
+            bail!("{}", status)
+        }
+    }
+
+    #[cfg(feature = "crypto-rs")]
+    pub fn sign(key: &[u8], hash: &[u8]) -> Result<Vec<u8, 72>> {
+        if hash.len() != 32 {
+            bail!("P-256 hash must contain 32 bytes");
+        }
+        let signing_key = P256SigningKey::from_slice(key).map_err(|e| anyhow!(e))?;
+        let signature: P256Signature = signing_key.sign_prehash(hash).map_err(|e| anyhow!(e))?;
+        let der = signature.to_der();
+        Vec::from_slice(der.as_bytes()).map_err(|_| anyhow!(""))
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn sign(key: &[u8], hash: &[u8]) -> Result<Vec<u8, 72>> {
+        if key.len() != 32 || hash.len() != 32 {
+            bail!("P-256 key and hash must contain 32 bytes");
+        }
+        let mut raw = [0; 64];
+        let status = unsafe {
+            bindings::psa_p256_sign_hash(key.as_ptr(), hash.as_ptr(), hash.len(), raw.as_mut_ptr())
+        };
+        if status != 0 {
+            bail!("{}", status);
+        }
+
+        ecdsa_signature_to_der(&raw)
+    }
+}
+
+fn ecdsa_signature_to_der(signature: &[u8; 64]) -> Result<Vec<u8, 72>> {
+    fn integer(value: &[u8]) -> (&[u8], bool) {
+        let first = value
+            .iter()
+            .position(|byte| *byte != 0)
+            .unwrap_or(value.len() - 1);
+        let value = &value[first..];
+        (value, value[0] & 0x80 != 0)
+    }
+
+    let (r, r_prefix) = integer(&signature[..32]);
+    let (s, s_prefix) = integer(&signature[32..]);
+    let sequence_len = 4 + r.len() + s.len() + r_prefix as usize + s_prefix as usize;
+    let mut der = Vec::new();
+    der.extend_from_slice(&[
+        0x30,
+        sequence_len as u8,
+        0x02,
+        (r.len() + r_prefix as usize) as u8,
+    ])
+    .map_err(|_| anyhow!(""))?;
+    if r_prefix {
+        der.push(0).map_err(|_| anyhow!(""))?;
+    }
+    der.extend_from_slice(r).map_err(|_| anyhow!(""))?;
+    der.extend_from_slice(&[0x02, (s.len() + s_prefix as usize) as u8])
+        .map_err(|_| anyhow!(""))?;
+    if s_prefix {
+        der.push(0).map_err(|_| anyhow!(""))?;
+    }
+    der.extend_from_slice(s).map_err(|_| anyhow!(""))?;
+    Ok(der)
 }
 
 impl Ed25519 {
@@ -543,6 +695,18 @@ mod tests {
                 .unwrap();
 
         assert_eq!(pk2, pk2_hex.as_slice());
+    }
+
+    #[test]
+    fn test_p256_scalar_boundaries() {
+        let order = hex::decode("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
+            .unwrap();
+        let mut last_valid = order.clone();
+        last_valid[31] -= 1;
+
+        assert!(P256::validate_key(&last_valid));
+        assert!(!P256::validate_key(&order));
+        assert!(!P256::validate_key(&[0; 32]));
     }
 
     #[test]

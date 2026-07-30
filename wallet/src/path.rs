@@ -21,10 +21,16 @@ impl ChildNumber {
     }
 
     pub fn hardened_from_u32(index: u32) -> Result<Self> {
+        if index >= HARDENED_BIT {
+            return Err(anyhow!("Index too large"));
+        }
         Ok(ChildNumber(index | HARDENED_BIT))
     }
 
     pub fn non_hardened_from_u32(index: u32) -> Result<Self> {
+        if index >= HARDENED_BIT {
+            return Err(anyhow!("Index too large"));
+        }
         Ok(ChildNumber(index))
     }
 }
@@ -52,11 +58,13 @@ pub struct DerivationPath {
     path: Vec<ChildNumber, 32>,
 }
 
-impl DerivationPath {
-    pub fn as_ref(&self) -> &[ChildNumber] {
+impl AsRef<[ChildNumber]> for DerivationPath {
+    fn as_ref(&self) -> &[ChildNumber] {
         &self.path
     }
+}
 
+impl DerivationPath {
     pub fn iter(&self) -> impl Iterator<Item = &ChildNumber> {
         self.path.iter()
     }
@@ -94,7 +102,7 @@ mod tests {
         let expected_path = Vec::from_slice(&[
             ChildNumber(44 | HARDENED_BIT),
             ChildNumber(60 | HARDENED_BIT),
-            ChildNumber(0 | HARDENED_BIT),
+            ChildNumber(HARDENED_BIT),
             ChildNumber(0),
             ChildNumber(0),
         ])
@@ -113,5 +121,7 @@ mod tests {
         assert!("44'/60'/0'/0".parse::<DerivationPath>().is_err());
         assert!("m/2147483648".parse::<DerivationPath>().is_err());
         assert!("m/abc".parse::<DerivationPath>().is_err());
+        assert!(ChildNumber::hardened_from_u32(HARDENED_BIT).is_err());
+        assert!(ChildNumber::non_hardened_from_u32(HARDENED_BIT).is_err());
     }
 }
