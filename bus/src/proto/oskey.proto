@@ -157,9 +157,24 @@ message SignResponse
 	optional uint32 recovery_id = 6;
 }
 
+enum AppError
+{
+	APP_ERROR_UNSPECIFIED = 0;
+	APP_ERROR_FAILED = 1;
+	APP_ERROR_BUSY = 2;
+	APP_ERROR_REJECTED = 3;
+	APP_ERROR_LOCKED = 4;
+	APP_ERROR_NO_PENDING_ACTION = 5;
+	APP_ERROR_DISPLAY_REQUIRED = 6;
+	APP_ERROR_EXTERNAL_REQUEST_REQUIRED = 7;
+	APP_ERROR_TRUSTED_ACTION_REQUIRED = 8;
+	APP_ERROR_INVALID_ACTION = 9;
+	APP_ERROR_UNLOCK_FAILED = 10;
+}
+
 message ErrorResponse
 {
-	int32 code = 1;
+	AppError code = 1;
 	string message = 2;
 }
 
@@ -192,6 +207,8 @@ message DisplayResponse
 {
 	DisplayAction action = 1;
 	string text = 2;
+	AppError error = 3;
+	uint32 value = 4;
 }
 
 message UserActionPrompt
