@@ -21,3 +21,4 @@ zeroize.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+p256.workspace = true

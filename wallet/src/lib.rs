@@ -9,4 +9,6 @@ pub mod alg;
 
 pub mod wallets;
 
+pub mod fido2;
+
 mod utils;

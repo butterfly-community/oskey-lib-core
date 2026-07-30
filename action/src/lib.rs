@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+mod confirmation;
+
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -13,6 +15,8 @@ use oskey_wallet::alg::crypto;
 use oskey_wallet::{mnemonic, wallets};
 use zeroize::{Zeroize, Zeroizing};
 
+use confirmation::ConfirmationService;
+
 const PIN_SALT: &[u8] = b"&%OSKey1$!@";
 
 #[repr(C)]
@@ -21,7 +25,8 @@ pub enum AppMessageSource {
     Uart = 0,
     Bluetooth = 1,
     Display = 2,
-    Button = 3,
+    Fido2 = 4,
+    Confirmation = 5,
 }
 
 #[repr(C)]
@@ -35,6 +40,9 @@ pub enum AppMessageAction {
     Reject,
     Restart,
     ResetStorage,
+    Fido2Register,
+    Fido2Sign,
+    Confirmation,
 }
 
 #[derive(Debug, PartialEq)]
@@ -61,12 +69,18 @@ struct PendingSign {
     reply_to: AppMessageSource,
 }
 
+#[allow(clippy::large_enum_variant)]
+enum PendingAction {
+    Sign(PendingSign),
+    Fido2,
+}
+
 struct WalletApp<P> {
     platform: P,
     pin_cache: [u8; 32],
     locked: bool,
     failed_unlocks: u8,
-    pending_sign: Option<PendingSign>,
+    confirmation: ConfirmationService<PendingAction>,
 }
 
 pub struct WalletRuntime<P> {
@@ -117,7 +131,10 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             return self.external(source, data);
         }
 
-        if !matches!(source, AppMessageSource::Display | AppMessageSource::Button) {
+        if !matches!(
+            source,
+            AppMessageSource::Display | AppMessageSource::Fido2 | AppMessageSource::Confirmation
+        ) {
             return Vec::new();
         }
 
@@ -161,6 +178,27 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                         },
                     })
                 }
+                AppMessageAction::Fido2Register => {
+                    req_data::Payload::Fido2RegisterRequest(proto::Fido2RegisterRequest {
+                        rp_id: core::str::from_utf8(data)?.to_string(),
+                        user_id: auxiliary.to_vec(),
+                    })
+                }
+                AppMessageAction::Fido2Sign => {
+                    if !matches!(auxiliary.len(), 32 | 64) {
+                        return Err(anyhow!("Invalid FIDO2 signing request"));
+                    }
+                    req_data::Payload::Fido2SignRequest(proto::Fido2SignRequest {
+                        credential_id: data.to_vec(),
+                        rp_id_hash: auxiliary[..32].to_vec(),
+                        hash: auxiliary.get(32..).unwrap_or_default().to_vec(),
+                    })
+                }
+                AppMessageAction::Confirmation => {
+                    req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
+                        active: value != 0,
+                    })
+                }
                 AppMessageAction::External => return Err(anyhow!("Invalid local message action")),
             };
             Ok(proto::ReqData {
@@ -173,7 +211,10 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             Err(_) if source == AppMessageSource::Display => {
                 vec![WalletApp::<P>::display_error(proto::AppError::Failed, 0)]
             }
-            Err(_) => Vec::new(),
+            Err(_) => vec![WalletApp::<P>::error_output(
+                source,
+                proto::AppError::Failed,
+            )],
         }
     }
 }
@@ -187,14 +228,27 @@ impl<P: WalletPlatform> WalletApp<P> {
             pin_cache: [0; 32],
             locked,
             failed_unlocks: 0,
-            pending_sign: None,
+            confirmation: ConfirmationService::new(),
         }
     }
 
     fn handle(&mut self, source: AppMessageSource, request: proto::ReqData) -> Vec<WalletOutput> {
-        if self.pending_sign.is_some() {
-            if let Some(req_data::Payload::UserActionRequest(request)) = request.payload {
-                return self.handle_user_action(source, request);
+        if self.confirmation.is_waiting() {
+            match request.payload {
+                Some(req_data::Payload::UserActionRequest(request)) => {
+                    return self.handle_user_action(source, request);
+                }
+                Some(req_data::Payload::ConfirmationControl(request))
+                    if source == AppMessageSource::Fido2 && !request.active =>
+                {
+                    return self.handle_confirmation_control(source, request);
+                }
+                Some(req_data::Payload::ConfirmationControl(_))
+                    if source == AppMessageSource::Fido2 =>
+                {
+                    return vec![Self::confirmation_result(AppMessageSource::Fido2, false)];
+                }
+                _ => {}
             }
 
             // TODO: Dispatch independent requests to a separate worker. Until then,
@@ -253,6 +307,13 @@ impl<P: WalletPlatform> WalletApp<P> {
             }
             req_data::Payload::DeviceRequest(request) => {
                 self.handle_device_request(source, request)
+            }
+            req_data::Payload::Fido2RegisterRequest(request) => {
+                self.handle_fido2_register(source, request)
+            }
+            req_data::Payload::Fido2SignRequest(request) => self.handle_fido2_sign(source, request),
+            req_data::Payload::ConfirmationControl(request) => {
+                self.handle_confirmation_control(source, request)
             }
         }
     }
@@ -424,18 +485,19 @@ impl<P: WalletPlatform> WalletApp<P> {
             Err(_) => return self.error(source, proto::AppError::Failed),
         };
 
-        self.pending_sign = Some(PendingSign {
+        if !self.confirmation.request(PendingAction::Sign(PendingSign {
             request,
             reply_to: source,
-        });
+        })) {
+            return self.error(source, proto::AppError::Busy);
+        }
 
         vec![
             Self::output(
                 source,
                 res_data::Payload::WaitForUserActionResponse(proto::WaitForUserActionResponse {}),
             ),
-            Self::display_output(proto::DisplayAction::Sign, display_text),
-            Self::button_output(true),
+            Self::confirmation_prompt(proto::ConfirmationKind::Sign, display_text),
         ]
     }
 
@@ -444,42 +506,75 @@ impl<P: WalletPlatform> WalletApp<P> {
         source: AppMessageSource,
         request: proto::UserActionRequest,
     ) -> Vec<WalletOutput> {
-        if !matches!(source, AppMessageSource::Button | AppMessageSource::Display) {
+        if source != AppMessageSource::Confirmation {
             return self.error(source, proto::AppError::TrustedActionRequired);
         }
 
-        let Some(pending) = self.pending_sign.take() else {
+        let Some(pending) = self.confirmation.finish() else {
             return self.error(source, proto::AppError::NoPendingAction);
         };
 
         let action =
             proto::UserAction::try_from(request.action).unwrap_or(proto::UserAction::Unspecified);
 
-        let mut outputs = match action {
-            proto::UserAction::Approve => match self.sign(pending.request) {
-                Ok(payload) => vec![Self::output(pending.reply_to, payload)],
-                Err(_) => vec![Self::error_output(
-                    pending.reply_to,
-                    proto::AppError::Failed,
-                )],
+        let mut outputs = match pending {
+            PendingAction::Sign(pending) => match action {
+                proto::UserAction::Approve => match self.sign(pending.request) {
+                    Ok(payload) => vec![Self::output(pending.reply_to, payload)],
+                    Err(_) => vec![Self::error_output(
+                        pending.reply_to,
+                        proto::AppError::Failed,
+                    )],
+                },
+                proto::UserAction::Reject => {
+                    vec![Self::error_output(
+                        pending.reply_to,
+                        proto::AppError::Rejected,
+                    )]
+                }
+                proto::UserAction::Unspecified => {
+                    vec![Self::error_output(
+                        pending.reply_to,
+                        proto::AppError::InvalidAction,
+                    )]
+                }
             },
-            proto::UserAction::Reject => {
-                vec![Self::error_output(
-                    pending.reply_to,
-                    proto::AppError::Rejected,
-                )]
-            }
-            proto::UserAction::Unspecified => {
-                vec![Self::error_output(
-                    pending.reply_to,
-                    proto::AppError::InvalidAction,
+            PendingAction::Fido2 => {
+                vec![Self::confirmation_result(
+                    AppMessageSource::Fido2,
+                    action == proto::UserAction::Approve,
                 )]
             }
         };
 
-        outputs.push(Self::display_output(proto::DisplayAction::Ready, ""));
-        outputs.push(Self::button_output(false));
+        outputs.push(Self::confirmation_finished());
         outputs
+    }
+
+    fn handle_confirmation_control(
+        &mut self,
+        source: AppMessageSource,
+        request: proto::ConfirmationControl,
+    ) -> Vec<WalletOutput> {
+        if source != AppMessageSource::Fido2 {
+            return self.error(source, proto::AppError::TrustedActionRequired);
+        }
+
+        if request.active {
+            if !self.confirmation.request(PendingAction::Fido2) {
+                vec![Self::confirmation_result(source, false)]
+            } else {
+                vec![Self::confirmation_prompt(
+                    proto::ConfirmationKind::Fido2,
+                    "",
+                )]
+            }
+        } else if matches!(self.confirmation.pending(), Some(PendingAction::Fido2)) {
+            self.confirmation.finish();
+            vec![Self::confirmation_finished()]
+        } else {
+            Vec::new()
+        }
     }
 
     fn handle_device_request(
@@ -501,6 +596,72 @@ impl<P: WalletPlatform> WalletApp<P> {
             }
         }
         Vec::new()
+    }
+
+    fn handle_fido2_register(
+        &self,
+        source: AppMessageSource,
+        request: proto::Fido2RegisterRequest,
+    ) -> Vec<WalletOutput> {
+        if source != AppMessageSource::Fido2 {
+            return self.error(source, proto::AppError::TrustedActionRequired);
+        }
+        if self.locked {
+            return self.error(source, proto::AppError::Locked);
+        }
+
+        let result: Result<res_data::Payload> = (|| {
+            let credential =
+                oskey_wallet::fido2::create(&self.load_seed()?, &request.rp_id, &request.user_id)?;
+            Ok(res_data::Payload::Fido2Response(proto::Fido2Response {
+                credential_id: credential.id.to_vec(),
+                data: credential.public_key.to_vec(),
+            }))
+        })();
+
+        match result {
+            Ok(payload) => self.reply(source, payload),
+            Err(_) => self.error(source, proto::AppError::Failed),
+        }
+    }
+
+    fn handle_fido2_sign(
+        &self,
+        source: AppMessageSource,
+        request: proto::Fido2SignRequest,
+    ) -> Vec<WalletOutput> {
+        if source != AppMessageSource::Fido2 {
+            return self.error(source, proto::AppError::TrustedActionRequired);
+        }
+        if self.locked {
+            return self.error(source, proto::AppError::Locked);
+        }
+
+        let result: Result<Vec<u8>> = self.load_seed().and_then(|seed| {
+            if request.hash.is_empty() {
+                oskey_wallet::fido2::validate(&seed, &request.credential_id, &request.rp_id_hash)
+                    .map(|_| Vec::new())
+            } else {
+                oskey_wallet::fido2::sign(
+                    &seed,
+                    &request.credential_id,
+                    &request.rp_id_hash,
+                    &request.hash,
+                )
+                .map(|signature| signature.to_vec())
+            }
+        });
+
+        match result {
+            Ok(signature) => self.reply(
+                source,
+                res_data::Payload::Fido2Response(proto::Fido2Response {
+                    credential_id: Vec::new(),
+                    data: signature,
+                }),
+            ),
+            Err(_) => self.error(source, proto::AppError::Failed),
+        }
     }
 
     fn sign(&self, request: proto::SignEthRequest) -> Result<res_data::Payload> {
@@ -626,18 +787,10 @@ impl<P: WalletPlatform> WalletApp<P> {
     }
 
     fn reply(&self, source: AppMessageSource, payload: res_data::Payload) -> Vec<WalletOutput> {
-        if source == AppMessageSource::Button {
-            Vec::new()
-        } else {
-            vec![Self::output(source, payload)]
-        }
+        vec![Self::output(source, payload)]
     }
 
     fn error(&self, source: AppMessageSource, error: proto::AppError) -> Vec<WalletOutput> {
-        if source == AppMessageSource::Button {
-            return Vec::new();
-        }
-
         if source == AppMessageSource::Display {
             return vec![Self::display_error(error, 0)];
         }
@@ -688,10 +841,32 @@ impl<P: WalletPlatform> WalletApp<P> {
         )
     }
 
-    fn button_output(active: bool) -> WalletOutput {
+    fn confirmation_prompt(kind: proto::ConfirmationKind, text: impl Into<String>) -> WalletOutput {
         Self::output(
-            AppMessageSource::Button,
-            res_data::Payload::UserActionPrompt(proto::UserActionPrompt { active }),
+            AppMessageSource::Confirmation,
+            res_data::Payload::ConfirmationPrompt(proto::ConfirmationPrompt {
+                active: true,
+                kind: kind as i32,
+                text: text.into(),
+            }),
+        )
+    }
+
+    fn confirmation_finished() -> WalletOutput {
+        Self::output(
+            AppMessageSource::Confirmation,
+            res_data::Payload::ConfirmationPrompt(proto::ConfirmationPrompt {
+                active: false,
+                kind: proto::ConfirmationKind::Unspecified as i32,
+                text: String::new(),
+            }),
+        )
+    }
+
+    fn confirmation_result(target: AppMessageSource, approved: bool) -> WalletOutput {
+        Self::output(
+            target,
+            res_data::Payload::ConfirmationResult(proto::ConfirmationResult { approved }),
         )
     }
 }
@@ -874,13 +1049,22 @@ mod tests {
         external(&mut app, init_request());
 
         let output = external(&mut app, sign_request());
-        assert_eq!(output.len(), 3);
+        assert_eq!(output.len(), 2);
         assert!(matches!(
             output[0].response.payload,
             Some(res_data::Payload::WaitForUserActionResponse(_))
         ));
-        assert_eq!(output[1].target, AppMessageSource::Display);
-        assert_eq!(output[2].target, AppMessageSource::Button);
+        assert_eq!(output[1].target, AppMessageSource::Confirmation);
+        assert!(matches!(
+            output[1].response.payload,
+            Some(res_data::Payload::ConfirmationPrompt(
+                proto::ConfirmationPrompt {
+                    active: true,
+                    kind,
+                    ..
+                }
+            )) if kind == proto::ConfirmationKind::Sign as i32
+        ));
 
         let untrusted = external(
             &mut app,
@@ -898,7 +1082,7 @@ mod tests {
             req_data::Payload::UserActionRequest(proto::UserActionRequest {
                 action: proto::UserAction::Approve as i32,
             }),
-            AppMessageSource::Button,
+            AppMessageSource::Confirmation,
         );
         assert!(matches!(
             approved[0].response.payload,
@@ -921,6 +1105,92 @@ mod tests {
         };
         assert_eq!(error.code, proto::AppError::Busy as i32);
         assert!(error.message.is_empty());
+    }
+
+    #[test]
+    fn fido2_uses_the_confirmation_service() {
+        let mut app = WalletApp::new(TestPlatform::new(false));
+        external(&mut app, init_request());
+
+        let prompt = request(
+            &mut app,
+            req_data::Payload::ConfirmationControl(proto::ConfirmationControl { active: true }),
+            AppMessageSource::Fido2,
+        );
+        assert!(matches!(
+            prompt[0].response.payload,
+            Some(res_data::Payload::ConfirmationPrompt(
+                proto::ConfirmationPrompt {
+                    active: true,
+                    kind,
+                    ..
+                }
+            )) if kind == proto::ConfirmationKind::Fido2 as i32
+        ));
+
+        let busy = external(&mut app, sign_request());
+        assert!(matches!(
+            busy[0].response.payload,
+            Some(res_data::Payload::ErrorResponse(proto::ErrorResponse {
+                code,
+                ..
+            })) if code == proto::AppError::Busy as i32
+        ));
+
+        let approved = request(
+            &mut app,
+            req_data::Payload::UserActionRequest(proto::UserActionRequest {
+                action: proto::UserAction::Approve as i32,
+            }),
+            AppMessageSource::Confirmation,
+        );
+        assert!(matches!(
+            approved[0].response.payload,
+            Some(res_data::Payload::ConfirmationResult(
+                proto::ConfirmationResult { approved: true }
+            ))
+        ));
+    }
+
+    #[test]
+    fn fido2_cancellation_releases_the_confirmation_service() {
+        let mut app = WalletApp::new(TestPlatform::new(false));
+
+        request(
+            &mut app,
+            req_data::Payload::ConfirmationControl(proto::ConfirmationControl { active: true }),
+            AppMessageSource::Fido2,
+        );
+        let output = request(
+            &mut app,
+            req_data::Payload::ConfirmationControl(proto::ConfirmationControl { active: false }),
+            AppMessageSource::Fido2,
+        );
+
+        assert!(matches!(
+            output[0].response.payload,
+            Some(res_data::Payload::ConfirmationPrompt(
+                proto::ConfirmationPrompt { active: false, .. }
+            ))
+        ));
+        assert!(!app.confirmation.is_waiting());
+    }
+
+    #[test]
+    fn malformed_fido2_message_returns_an_error() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        let output = runtime.message(
+            AppMessageSource::Fido2,
+            AppMessageAction::Fido2Register,
+            0,
+            &[0xff],
+            &[],
+        );
+
+        assert!(matches!(
+            output[0].response.payload,
+            Some(res_data::Payload::ErrorResponse(_))
+        ));
     }
 
     #[test]
@@ -949,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn button_approval_returns_to_original_transport() {
+    fn confirmation_returns_to_original_transport() {
         let mut app = WalletApp::new(TestPlatform::new(false));
         external(&mut app, init_request());
         external(&mut app, sign_request());
@@ -959,7 +1229,7 @@ mod tests {
             req_data::Payload::UserActionRequest(proto::UserActionRequest {
                 action: proto::UserAction::Approve as i32,
             }),
-            AppMessageSource::Button,
+            AppMessageSource::Confirmation,
         );
 
         assert_eq!(output[0].target, AppMessageSource::Uart);
@@ -967,8 +1237,7 @@ mod tests {
             output[0].response.payload,
             Some(res_data::Payload::SignResponse(_))
         ));
-        assert_eq!(output[1].target, AppMessageSource::Display);
-        assert_eq!(output[2].target, AppMessageSource::Button);
+        assert_eq!(output[1].target, AppMessageSource::Confirmation);
     }
 
     #[test]
@@ -1023,7 +1292,7 @@ mod tests {
             req_data::Payload::UserActionRequest(proto::UserActionRequest {
                 action: proto::UserAction::Approve as i32,
             }),
-            AppMessageSource::Button,
+            AppMessageSource::Confirmation,
         );
         assert_eq!(output[0].target, AppMessageSource::Bluetooth);
     }
@@ -1039,7 +1308,7 @@ mod tests {
             req_data::Payload::UserActionRequest(proto::UserActionRequest {
                 action: proto::UserAction::Reject as i32,
             }),
-            AppMessageSource::Button,
+            AppMessageSource::Confirmation,
         );
         let Some(res_data::Payload::ErrorResponse(error)) = &rejected[0].response.payload else {
             panic!("expected rejection");
@@ -1190,5 +1459,52 @@ mod tests {
             uart[0].response.payload,
             Some(res_data::Payload::VersionResponse(_))
         ));
+    }
+
+    #[test]
+    fn fido2_credential_survives_wallet_restore() {
+        let platform = TestPlatform::new(false);
+        let mut first_boot = WalletApp::new(platform.clone());
+        external(&mut first_boot, init_request());
+
+        let registered = request(
+            &mut first_boot,
+            req_data::Payload::Fido2RegisterRequest(proto::Fido2RegisterRequest {
+                rp_id: "ssh:".into(),
+                user_id: b"oskey".to_vec(),
+            }),
+            AppMessageSource::Fido2,
+        );
+        let Some(res_data::Payload::Fido2Response(credential)) = &registered[0].response.payload
+        else {
+            panic!("expected FIDO2 credential");
+        };
+        assert_eq!(credential.credential_id.len(), 64);
+        assert_eq!(credential.data.len(), 65);
+
+        let mut restored = WalletApp::new(platform);
+        external(
+            &mut restored,
+            req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                hash: pin(),
+                pin_text: None,
+            }),
+        );
+        let signed = request(
+            &mut restored,
+            req_data::Payload::Fido2SignRequest(proto::Fido2SignRequest {
+                credential_id: credential.credential_id.clone(),
+                rp_id_hash: crypto::Hash::sha256(b"ssh:").unwrap().to_vec(),
+                hash: vec![1; 32],
+            }),
+            AppMessageSource::Fido2,
+        );
+        let Some(res_data::Payload::Fido2Response(response)) = &signed[0].response.payload else {
+            panic!("expected FIDO2 signature");
+        };
+        use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+        let public_key = VerifyingKey::from_sec1_bytes(&credential.data).unwrap();
+        let signature = Signature::from_der(&response.data).unwrap();
+        public_key.verify_prehash(&[1; 32], &signature).unwrap();
     }
 }

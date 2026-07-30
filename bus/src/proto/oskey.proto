@@ -18,6 +18,9 @@ message ReqData
 		SignEthRequest sign_eth_request = 70;
 		UserActionRequest user_action_request = 81;
 		DeviceRequest device_request = 82;
+		Fido2RegisterRequest fido2_register_request = 83;
+		Fido2SignRequest fido2_sign_request = 84;
+		ConfirmationControl confirmation_control = 85;
 	}
 }
 
@@ -34,7 +37,9 @@ message ResData
 		SignResponse sign_response = 61;
 		WaitForUserActionResponse wait_for_user_action_response = 80;
 		DisplayResponse display_response = 90;
-		UserActionPrompt user_action_prompt = 91;
+		ConfirmationPrompt confirmation_prompt = 91;
+		Fido2Response fido2_response = 92;
+		ConfirmationResult confirmation_result = 93;
 	}
 }
 
@@ -201,6 +206,7 @@ enum DisplayAction
 	DISPLAY_ACTION_MNEMONIC = 2;
 	DISPLAY_ACTION_SIGN = 3;
 	DISPLAY_ACTION_ERROR = 4;
+	DISPLAY_ACTION_CONFIRM = 5;
 }
 
 message DisplayResponse
@@ -211,9 +217,28 @@ message DisplayResponse
 	uint32 value = 4;
 }
 
-message UserActionPrompt
+enum ConfirmationKind
+{
+	CONFIRMATION_KIND_UNSPECIFIED = 0;
+	CONFIRMATION_KIND_SIGN = 1;
+	CONFIRMATION_KIND_FIDO2 = 2;
+}
+
+message ConfirmationControl
 {
 	bool active = 1;
+}
+
+message ConfirmationPrompt
+{
+	bool active = 1;
+	ConfirmationKind kind = 2;
+	string text = 3;
+}
+
+message ConfirmationResult
+{
+	bool approved = 1;
 }
 
 enum DeviceAction
@@ -226,4 +251,23 @@ enum DeviceAction
 message DeviceRequest
 {
 	DeviceAction action = 1;
+}
+
+message Fido2RegisterRequest
+{
+	string rp_id = 1;
+	bytes user_id = 2;
+}
+
+message Fido2SignRequest
+{
+	bytes credential_id = 1;
+	bytes rp_id_hash = 2;
+	bytes hash = 3;
+}
+
+message Fido2Response
+{
+	bytes credential_id = 1;
+	bytes data = 2;
 }
