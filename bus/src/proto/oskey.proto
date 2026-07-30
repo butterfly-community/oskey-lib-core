@@ -227,6 +227,7 @@ enum ConfirmationKind
 message ConfirmationControl
 {
 	bool active = 1;
+	string text = 2;
 }
 
 message ConfirmationPrompt

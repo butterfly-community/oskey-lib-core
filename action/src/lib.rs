@@ -197,6 +197,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 AppMessageAction::Confirmation => {
                     req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
                         active: value != 0,
+                        text: String::from_utf8_lossy(data).into_owned(),
                     })
                 }
                 AppMessageAction::External => return Err(anyhow!("Invalid local message action")),
@@ -566,7 +567,7 @@ impl<P: WalletPlatform> WalletApp<P> {
             } else {
                 vec![Self::confirmation_prompt(
                     proto::ConfirmationKind::Fido2,
-                    "",
+                    request.text,
                 )]
             }
         } else if matches!(self.confirmation.pending(), Some(PendingAction::Fido2)) {
@@ -1114,7 +1115,10 @@ mod tests {
 
         let prompt = request(
             &mut app,
-            req_data::Payload::ConfirmationControl(proto::ConfirmationControl { active: true }),
+            req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
+                active: true,
+                text: "Use security key".into(),
+            }),
             AppMessageSource::Fido2,
         );
         assert!(matches!(
@@ -1123,9 +1127,9 @@ mod tests {
                 proto::ConfirmationPrompt {
                     active: true,
                     kind,
-                    ..
+                    ref text,
                 }
-            )) if kind == proto::ConfirmationKind::Fido2 as i32
+            )) if kind == proto::ConfirmationKind::Fido2 as i32 && text == "Use security key"
         ));
 
         let busy = external(&mut app, sign_request());
@@ -1153,17 +1157,42 @@ mod tests {
     }
 
     #[test]
+    fn fido2_confirmation_replaces_invalid_utf8() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        let output = runtime.message(
+            AppMessageSource::Fido2,
+            AppMessageAction::Confirmation,
+            1,
+            b"Use \xff key",
+            &[],
+        );
+
+        assert!(matches!(
+            output[0].response.payload,
+            Some(res_data::Payload::ConfirmationPrompt(
+                proto::ConfirmationPrompt { ref text, .. }
+            )) if text == "Use \u{fffd} key"
+        ));
+    }
+
+    #[test]
     fn fido2_cancellation_releases_the_confirmation_service() {
         let mut app = WalletApp::new(TestPlatform::new(false));
 
         request(
             &mut app,
-            req_data::Payload::ConfirmationControl(proto::ConfirmationControl { active: true }),
+            req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
+                active: true,
+                text: "Use security key".into(),
+            }),
             AppMessageSource::Fido2,
         );
         let output = request(
             &mut app,
-            req_data::Payload::ConfirmationControl(proto::ConfirmationControl { active: false }),
+            req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
+                active: false,
+                text: String::new(),
+            }),
             AppMessageSource::Fido2,
         );
 

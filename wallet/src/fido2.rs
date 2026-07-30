@@ -5,7 +5,6 @@ use anyhow::{bail, Result};
 
 pub const CREDENTIAL_ID_SIZE: usize = 64;
 
-const PURPOSE: u32 = 13;
 const VERSION: u8 = 1;
 const IDENTITY_OFFSET: usize = 1;
 const IDENTITY_SIZE: usize = 16;
@@ -102,12 +101,19 @@ mod tests {
     const SEED: [u8; 64] = [7; 64];
 
     #[test]
-    fn credential_is_recoverable() {
-        let first = create(&SEED, "ssh:", b"oskey").unwrap();
-        let restored = create(&SEED, "ssh:", b"oskey").unwrap();
+    fn credential_matches_recovery_vector() {
+        let credential = create(&SEED, "ssh:", b"oskey").unwrap();
 
-        assert_eq!(first.id, restored.id);
-        assert_eq!(first.public_key, restored.public_key);
+        assert_eq!(
+            hex::encode(credential.id),
+            "0199a9c544bc6953a0b3088807cd9c8500e30610e8a162115960fe1ec223e652\
+             9c9f4b6e80200dcb5e5c321c8af1e2b1bf62c28d79735a5dd54f0e86112d2e80"
+        );
+        assert_eq!(
+            hex::encode(credential.public_key),
+            "042486df6e38f74ccf55afd17bae161fef549101821476961064d8360df6fe110\
+             d8482e77bc45b2b902884c419758921164716b9c3e12221eca5acc6d829e63e82"
+        );
     }
 
     #[test]
