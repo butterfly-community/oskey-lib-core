@@ -8,7 +8,7 @@ use {
     ed25519_dalek::{Signature, Signer, SigningKey as EdSigningKey},
     hmac::{Hmac, Mac},
     k256::{
-        ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToEncodedPoint,
+        ecdsa::SigningKey as K256SigningKey, elliptic_curve::sec1::ToSec1Point,
         SecretKey as K256SecretKey,
     },
     pbkdf2::pbkdf2_hmac,
@@ -108,7 +108,7 @@ impl PBKDF2 {
 impl HMAC {
     #[cfg(feature = "crypto-rs")]
     pub fn hmac_sha512(secret: &[u8], message: &[u8]) -> Result<[u8; 64]> {
-        let hmac = Hmac::<Sha512>::new_from_slice(secret)
+        let hmac = <Hmac<Sha512> as hmac::KeyInit>::new_from_slice(secret)
             .map_err(|e| anyhow!(e))?
             .chain_update(message)
             .finalize()
@@ -143,7 +143,7 @@ impl K256 {
             bail!("sk len not 32, current {}", sk.len())
         }
         let sk = K256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
-        let pk = sk.public_key().to_encoded_point(true);
+        let pk = sk.public_key().to_sec1_point(true);
         Ok(pk.as_bytes().try_into()?)
     }
 
@@ -167,7 +167,7 @@ impl K256 {
             bail!("sk len not 32, current {}", sk.len())
         }
         let sk = K256SecretKey::from_slice(sk).map_err(|e| anyhow!(e))?;
-        let pk = sk.public_key().to_encoded_point(false);
+        let pk = sk.public_key().to_sec1_point(false);
         Ok(pk.as_bytes().try_into()?)
     }
 
@@ -214,9 +214,7 @@ impl K256 {
     pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256AppSignature> {
         let sk = K256SecretKey::from_slice(sk_bytes).map_err(|e| anyhow!(e))?;
         let signing_key = K256SigningKey::from(sk);
-        let signature = signing_key
-            .sign_prehash_recoverable(data)
-            .map_err(|e| anyhow!(e))?;
+        let signature = signing_key.sign_prehash_recoverable(data);
         let result = K256AppSignature {
             public_key: Self::export_pk(sk_bytes)?,
             pre_hash: data.try_into()?,
@@ -356,16 +354,12 @@ impl ChaCha20Poly1305Cipher {
         nonce: &[u8; 12],
         bytes: &[u8],
     ) -> Result<heapless::Vec<u8, 1024>> {
-        use chacha20poly1305::{
-            aead::{Aead, KeyInit},
-            Key, Nonce,
-        };
+        use chacha20poly1305::aead::{Aead, KeyInit};
 
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-        let nonce = Nonce::from_slice(nonce);
+        let cipher = ChaCha20Poly1305::new(key.into());
 
         let ciphertext = cipher
-            .encrypt(nonce, bytes)
+            .encrypt(nonce.into(), bytes)
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
         let mut result = heapless::Vec::new();
@@ -419,16 +413,12 @@ impl ChaCha20Poly1305Cipher {
         nonce: &[u8; 12],
         ciphertext: &[u8],
     ) -> Result<heapless::Vec<u8, 1024>> {
-        use chacha20poly1305::{
-            aead::{Aead, KeyInit},
-            Key, Nonce,
-        };
+        use chacha20poly1305::aead::{Aead, KeyInit};
 
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-        let nonce = Nonce::from_slice(nonce);
+        let cipher = ChaCha20Poly1305::new(key.into());
 
         let bytes = cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(nonce.into(), ciphertext)
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
         let mut result = heapless::Vec::new();

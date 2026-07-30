@@ -6,8 +6,9 @@ description = ""
 license = ""
 
 [dependencies]
-anyhow = { version = "1.0", default-features = false }
-prost = { version = "0.14", default-features = false, features = ["derive"] }
+prost.workspace = true
+
+anyhow.workspace = true
 
 [build-dependencies]
-prost-build = "0.14"
+prost-build.workspace = true
