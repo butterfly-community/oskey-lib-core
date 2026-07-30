@@ -181,7 +181,6 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 AppMessageAction::Fido2Register => {
                     req_data::Payload::Fido2RegisterRequest(proto::Fido2RegisterRequest {
                         rp_id: core::str::from_utf8(data)?.to_string(),
-                        user_id: auxiliary.to_vec(),
                     })
                 }
                 AppMessageAction::Fido2Sign => {
@@ -612,8 +611,12 @@ impl<P: WalletPlatform> WalletApp<P> {
         }
 
         let result: Result<res_data::Payload> = (|| {
-            let credential =
-                oskey_wallet::fido2::create(&self.load_seed()?, &request.rp_id, &request.user_id)?;
+            let nonce = self.platform.random(oskey_wallet::fido2::NONCE_SIZE);
+            let credential = oskey_wallet::fido2::create(
+                &self.load_seed()?,
+                &request.rp_id,
+                nonce.as_slice().try_into()?,
+            )?;
             Ok(res_data::Payload::Fido2Response(proto::Fido2Response {
                 credential_id: credential.id.to_vec(),
                 data: credential.public_key.to_vec(),
@@ -1500,7 +1503,6 @@ mod tests {
             &mut first_boot,
             req_data::Payload::Fido2RegisterRequest(proto::Fido2RegisterRequest {
                 rp_id: "ssh:".into(),
-                user_id: b"oskey".to_vec(),
             }),
             AppMessageSource::Fido2,
         );

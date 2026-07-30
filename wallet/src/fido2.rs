@@ -4,35 +4,34 @@ use crate::wallets::{Curve, ExtendedPrivKey};
 use anyhow::{bail, Result};
 
 pub const CREDENTIAL_ID_SIZE: usize = 64;
+pub const NONCE_SIZE: usize = 16;
 
-const VERSION: u8 = 1;
-const IDENTITY_OFFSET: usize = 1;
-const IDENTITY_SIZE: usize = 16;
-const RP_ID_HASH_OFFSET: usize = IDENTITY_OFFSET + IDENTITY_SIZE;
+const VERSION: u8 = 2;
+const NONCE_OFFSET: usize = 1;
+const RP_ID_HASH_OFFSET: usize = NONCE_OFFSET + NONCE_SIZE;
 const TAG_OFFSET: usize = RP_ID_HASH_OFFSET + 32;
+const FIDO_NAMESPACE: u32 = u32::from_be_bytes(*b"FIDO");
 
 pub struct Credential {
     pub id: [u8; CREDENTIAL_ID_SIZE],
     pub public_key: [u8; 65],
 }
 
-pub fn create(seed: &[u8], rp_id: &str, user_id: &[u8]) -> Result<Credential> {
-    let user_hash = Hash::sha256(user_id)?;
+pub fn create(seed: &[u8], rp_id: &str, nonce: &[u8; NONCE_SIZE]) -> Result<Credential> {
     let rp_id_hash = Hash::sha256(rp_id.as_bytes())?;
-    let mut identity = [0; 64];
-    identity[..32].copy_from_slice(&rp_id_hash);
-    identity[32..].copy_from_slice(&user_hash);
-    let identity = Hash::sha256(&identity)?;
 
     let mut id = [0; CREDENTIAL_ID_SIZE];
     id[0] = VERSION;
-    id[IDENTITY_OFFSET..RP_ID_HASH_OFFSET].copy_from_slice(&identity[..IDENTITY_SIZE]);
+    id[NONCE_OFFSET..RP_ID_HASH_OFFSET].copy_from_slice(nonce);
     id[RP_ID_HASH_OFFSET..TAG_OFFSET].copy_from_slice(&rp_id_hash);
 
-    let purpose = purpose_key(seed)?;
-    let tag = HMAC::hmac_sha512(&purpose.chain_code, &id[..TAG_OFFSET])?;
+    let namespace = namespace_key(seed)?;
+    let handle_key = namespace.child(ChildNumber::hardened_from_u32(0)?)?;
+    let tag = HMAC::hmac_sha512(&handle_key.secret_key, &id[..TAG_OFFSET])?;
     id[TAG_OFFSET..].copy_from_slice(&tag[..CREDENTIAL_ID_SIZE - TAG_OFFSET]);
-    let key = derive_identity(purpose, &identity[..IDENTITY_SIZE])?;
+
+    let key_root = namespace.child(ChildNumber::hardened_from_u32(1)?)?;
+    let key = derive_identity(key_root, &identity(nonce, &rp_id_hash)?)?;
 
     Ok(Credential {
         id,
@@ -46,8 +45,14 @@ pub fn sign(
     rp_id_hash: &[u8],
     hash: &[u8],
 ) -> Result<heapless::Vec<u8, 72>> {
-    let purpose = authenticate(seed, credential_id, rp_id_hash)?;
-    let key = derive_identity(purpose, &credential_id[IDENTITY_OFFSET..RP_ID_HASH_OFFSET])?;
+    let key_root = authenticate(seed, credential_id, rp_id_hash)?;
+    let key = derive_identity(
+        key_root,
+        &identity(
+            credential_id[NONCE_OFFSET..RP_ID_HASH_OFFSET].try_into()?,
+            rp_id_hash.try_into()?,
+        )?,
+    )?;
     if hash.len() != 32 {
         bail!("Invalid FIDO2 signing hash");
     }
@@ -67,8 +72,9 @@ fn authenticate(seed: &[u8], credential_id: &[u8], rp_id_hash: &[u8]) -> Result<
         bail!("Invalid FIDO2 credential");
     }
 
-    let purpose = purpose_key(seed)?;
-    let expected = HMAC::hmac_sha512(&purpose.chain_code, &credential_id[..TAG_OFFSET])?;
+    let namespace = namespace_key(seed)?;
+    let handle_key = namespace.child(ChildNumber::hardened_from_u32(0)?)?;
+    let expected = HMAC::hmac_sha512(&handle_key.secret_key, &credential_id[..TAG_OFFSET])?;
     let valid = expected[..CREDENTIAL_ID_SIZE - TAG_OFFSET]
         .iter()
         .zip(&credential_id[TAG_OFFSET..])
@@ -78,17 +84,25 @@ fn authenticate(seed: &[u8], credential_id: &[u8], rp_id_hash: &[u8]) -> Result<
         bail!("Invalid FIDO2 credential tag");
     }
 
-    Ok(purpose)
+    namespace.child(ChildNumber::hardened_from_u32(1)?)
 }
 
-fn purpose_key(seed: &[u8]) -> Result<ExtendedPrivKey> {
-    ExtendedPrivKey::derive(seed, "m/13'".parse::<DerivationPath>()?, Curve::P256)
+fn namespace_key(seed: &[u8]) -> Result<ExtendedPrivKey> {
+    ExtendedPrivKey::derive(seed, "m/13'".parse::<DerivationPath>()?, Curve::P256)?
+        .child(ChildNumber::hardened_from_u32(FIDO_NAMESPACE)?)
 }
 
-fn derive_identity(mut key: ExtendedPrivKey, identity: &[u8]) -> Result<ExtendedPrivKey> {
-    for component in identity.chunks_exact(2) {
+fn identity(nonce: &[u8; NONCE_SIZE], rp_id_hash: &[u8; 32]) -> Result<[u8; 32]> {
+    let mut data = [0; NONCE_SIZE + 32];
+    data[..NONCE_SIZE].copy_from_slice(nonce);
+    data[NONCE_SIZE..].copy_from_slice(rp_id_hash);
+    Hash::sha256(&data)
+}
+
+fn derive_identity(mut key: ExtendedPrivKey, identity: &[u8; 32]) -> Result<ExtendedPrivKey> {
+    for component in identity[..16].chunks_exact(4) {
         key = key.child(ChildNumber::hardened_from_u32(
-            u16::from_le_bytes(component.try_into()?) as u32,
+            u32::from_le_bytes(component.try_into()?) & 0x7fff_ffff,
         )?)?;
     }
     Ok(key)
@@ -99,26 +113,27 @@ mod tests {
     use super::*;
 
     const SEED: [u8; 64] = [7; 64];
+    const NONCE: [u8; NONCE_SIZE] = [11; NONCE_SIZE];
 
     #[test]
     fn credential_matches_recovery_vector() {
-        let credential = create(&SEED, "ssh:", b"oskey").unwrap();
+        let credential = create(&SEED, "ssh:", &NONCE).unwrap();
 
         assert_eq!(
             hex::encode(credential.id),
-            "0199a9c544bc6953a0b3088807cd9c8500e30610e8a162115960fe1ec223e652\
-             9c9f4b6e80200dcb5e5c321c8af1e2b1bf62c28d79735a5dd54f0e86112d2e80"
+            "020b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0be30610e8a162115960fe1ec223e652\
+             9c9f4b6e80200dcb5e5c321c8af1e2b1bf0318a6710fc1996476851578977613"
         );
         assert_eq!(
             hex::encode(credential.public_key),
-            "042486df6e38f74ccf55afd17bae161fef549101821476961064d8360df6fe110\
-             d8482e77bc45b2b902884c419758921164716b9c3e12221eca5acc6d829e63e82"
+            "04cf46efbc23425ea0d4d9ea62ae572f50e28fa6b3c36f56e33cb99f71299c046\
+             dd6f314c1212464347340d961bc2c7c53b1e8f97ae9266efdb8056fd712afc3dd"
         );
     }
 
     #[test]
     fn credential_is_bound_to_relying_party() {
-        let mut credential = create(&SEED, "ssh:", b"oskey").unwrap();
+        let mut credential = create(&SEED, "ssh:", &NONCE).unwrap();
         let hash = [3; 32];
 
         assert!(sign(
@@ -136,6 +151,10 @@ mod tests {
         )
         .is_err());
 
+        let mut altered_nonce = credential.id;
+        altered_nonce[NONCE_OFFSET] ^= 1;
+        assert!(validate(&SEED, &altered_nonce, &Hash::sha256(b"ssh:").unwrap()).is_err());
+
         credential.id[CREDENTIAL_ID_SIZE - 1] ^= 1;
         assert!(sign(
             &SEED,
@@ -147,24 +166,20 @@ mod tests {
     }
 
     #[test]
-    fn credential_path_changes_with_user() {
-        let first = create(&SEED, "ssh:", b"first").unwrap();
-        let second = create(&SEED, "ssh:", b"second").unwrap();
+    fn each_registration_creates_a_new_key() {
+        let first = create(&SEED, "ssh:", &[1; NONCE_SIZE]).unwrap();
+        let second = create(&SEED, "ssh:", &[2; NONCE_SIZE]).unwrap();
 
         assert_ne!(first.id, second.id);
         assert_ne!(first.public_key, second.public_key);
     }
 
     #[test]
-    fn credential_uses_more_than_the_user_hash_prefix() {
-        let first = create(&SEED, "ssh:", b"user-20491").unwrap();
-        let second = create(&SEED, "ssh:", b"user-32057").unwrap();
+    fn credential_is_bound_to_seed() {
+        let credential = create(&SEED, "ssh:", &NONCE).unwrap();
+        let mut other_seed = SEED;
+        other_seed[0] ^= 1;
 
-        assert_eq!(
-            &Hash::sha256(b"user-20491").unwrap()[..4],
-            &Hash::sha256(b"user-32057").unwrap()[..4]
-        );
-        assert_ne!(first.id, second.id);
-        assert_ne!(first.public_key, second.public_key);
+        assert!(validate(&other_seed, &credential.id, &Hash::sha256(b"ssh:").unwrap()).is_err());
     }
 }
