@@ -13,7 +13,7 @@ pub struct Mnemonic {
 
 impl Mnemonic {
     pub fn from_phrase(phrase: &str) -> Result<Self> {
-        let original_words: Vec<&str, 24> = phrase.trim().split_whitespace().collect();
+        let original_words: Vec<&str, 24> = phrase.split_whitespace().collect();
         let original_bits = Self::words_to_bits(&original_words)?;
 
         let entropy = Self::bits_to_entropy(&original_bits)?;
@@ -45,7 +45,7 @@ impl Mnemonic {
     fn entropy_to_bits(entropy: &[u8]) -> Result<BitVec> {
         let entropy_len = entropy.len() * 8;
 
-        if !(128..=256).contains(&entropy_len) || entropy_len % 32 != 0 {
+        if !(128..=256).contains(&entropy_len) || !entropy_len.is_multiple_of(32) {
             bail!("Invalid entropy length")
         }
 
@@ -86,7 +86,7 @@ impl Mnemonic {
     fn words_to_bits(words: &[&str]) -> Result<BitVec> {
         let word_count = words.len();
 
-        if !(12..=24).contains(&word_count) || word_count % 3 != 0 {
+        if !(12..=24).contains(&word_count) || !word_count.is_multiple_of(3) {
             bail!("Invalid entropy length")
         }
         let mut bits = BitVec::with_capacity(word_count * 11);
@@ -289,7 +289,7 @@ mod test {
                 "01f5bced59dec48e362f2c45b5de68b9fd6c92c6634f44d6d40aab69056506f0e35524a518034ddc1192e1dacd32c1ed3eaa3c3b131c88ed8e7e54c49a5d0998",
             ]
         ];
-        return test_vectors;
+        test_vectors
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod test {
         for case in &test_vectors {
             let mnemonic = Mnemonic::from_phrase(case[1]).unwrap();
             let seed = mnemonic.to_seed("OHW").unwrap();
-            assert_eq!(hex::encode(seed.clone()), case[2]);
+            assert_eq!(hex::encode(seed), case[2]);
 
             let mnemonic = Mnemonic::from_phrase(case[1]).unwrap();
             let seed = mnemonic.to_seed("TREZOR").unwrap();
