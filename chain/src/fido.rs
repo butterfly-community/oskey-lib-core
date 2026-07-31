@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use oskey_bus::proto;
 use oskey_wallet::alg::crypto::{Hash, HMAC, P256};
 use oskey_wallet::path::{ChildNumber, DerivationPath};
 use oskey_wallet::wallets::{Curve, ExtendedPrivKey};
@@ -15,6 +16,24 @@ const FIDO_NAMESPACE: u32 = u32::from_be_bytes(*b"FIDO");
 pub struct Credential {
     pub id: [u8; CREDENTIAL_ID_SIZE],
     pub public_key: [u8; 65],
+}
+
+pub fn confirmation(
+    operation: proto::FidoOperation,
+    rp_id: &[u8],
+    account: &[u8],
+) -> Result<proto::FidoConfirmation> {
+    if operation == proto::FidoOperation::Unspecified {
+        bail!("Invalid FIDO2 operation");
+    }
+
+    Ok(proto::FidoConfirmation {
+        operation: operation as i32,
+        rp_id: core::str::from_utf8(rp_id)?.into(),
+        account: account.into(),
+        account_is_text: core::str::from_utf8(account)
+            .is_ok_and(|value| value.chars().all(|character| !character.is_control())),
+    })
 }
 
 pub fn create(seed: &[u8], rp_id: &str, nonce: &[u8; NONCE_SIZE]) -> Result<Credential> {
@@ -129,6 +148,26 @@ mod tests {
             "04cf46efbc23425ea0d4d9ea62ae572f50e28fa6b3c36f56e33cb99f71299c046\
              dd6f314c1212464347340d961bc2c7c53b1e8f97ae9266efdb8056fd712afc3dd"
         );
+    }
+
+    #[test]
+    fn confirmation_preserves_structured_fields() {
+        let prompt = confirmation(
+            proto::FidoOperation::Register,
+            b"example.com",
+            b"person@example.com",
+        )
+        .unwrap();
+
+        assert_eq!(prompt.operation, proto::FidoOperation::Register as i32);
+        assert_eq!(prompt.rp_id, "example.com");
+        assert_eq!(prompt.account, b"person@example.com");
+        assert!(prompt.account_is_text);
+
+        let binary = confirmation(proto::FidoOperation::Authenticate, b"ssh:", &[0, 1]).unwrap();
+        assert!(!binary.account_is_text);
+        assert!(confirmation(proto::FidoOperation::Unspecified, b"", b"").is_err());
+        assert!(confirmation(proto::FidoOperation::Select, &[0xff], b"").is_err());
     }
 
     #[test]

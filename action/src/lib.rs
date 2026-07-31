@@ -196,9 +196,16 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                     })
                 }
                 AppMessageAction::Confirmation => {
+                    let active = value != 0;
+                    let fido = if active {
+                        let operation = proto::FidoOperation::try_from(i32::try_from(value)?)?;
+                        Some(oskey_chain::fido::confirmation(operation, data, auxiliary)?)
+                    } else {
+                        None
+                    };
                     req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
-                        active: value != 0,
-                        text: String::from_utf8_lossy(data).into_owned(),
+                        active,
+                        fido,
                     })
                 }
                 AppMessageAction::External => return Err(anyhow!("Invalid local message action")),
@@ -212,6 +219,12 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             Ok(request) => self.app.handle(source, request),
             Err(_) if source == AppMessageSource::Display => {
                 vec![WalletApp::<P>::display_error(proto::AppError::Failed, 0)]
+            }
+            Err(_)
+                if source == AppMessageSource::Fido2
+                    && action == AppMessageAction::Confirmation =>
+            {
+                vec![WalletApp::<P>::confirmation_result(source, false)]
             }
             Err(_) => vec![WalletApp::<P>::error_output(
                 source,
@@ -481,7 +494,7 @@ impl<P: WalletPlatform> WalletApp<P> {
         }
 
         // TODO: Support requests larger than 8 KiB with chunked transport and streaming hashing.
-        let (pending, display_text) = match Self::prepare_sign(source, request) {
+        let (pending, confirmation) = match Self::prepare_sign(source, request) {
             Ok(prepared) => prepared,
             Err(_) => return self.error(source, proto::AppError::Failed),
         };
@@ -495,7 +508,7 @@ impl<P: WalletPlatform> WalletApp<P> {
                 source,
                 res_data::Payload::WaitForUserActionResponse(proto::WaitForUserActionResponse {}),
             ),
-            Self::confirmation_prompt(proto::ConfirmationKind::Sign, display_text),
+            Self::confirmation_prompt(confirmation),
         ]
     }
 
@@ -561,12 +574,14 @@ impl<P: WalletPlatform> WalletApp<P> {
         }
 
         if request.active {
+            let Some(fido) = request.fido else {
+                return self.error(source, proto::AppError::InvalidAction);
+            };
             if !self.confirmation.request(PendingAction::Fido2) {
                 vec![Self::confirmation_result(source, false)]
             } else {
                 vec![Self::confirmation_prompt(
-                    proto::ConfirmationKind::Fido2,
-                    request.text,
+                    proto::confirmation_prompt::Content::Fido(fido),
                 )]
             }
         } else if matches!(self.confirmation.pending(), Some(PendingAction::Fido2)) {
@@ -671,17 +686,20 @@ impl<P: WalletPlatform> WalletApp<P> {
     fn prepare_sign(
         source: AppMessageSource,
         request: proto::SignEthRequest,
-    ) -> Result<(PendingSign, String)> {
+    ) -> Result<(PendingSign, proto::confirmation_prompt::Content)> {
         let proto::SignEthRequest { id, path, tx, .. } = request;
         let path = path.parse()?;
         let tx = tx.ok_or_else(|| anyhow!("Transaction data is missing"))?;
 
-        let (hash, display_text) = match tx {
+        let (hash, confirmation) = match tx {
             proto::sign_eth_request::Tx::Eip2930(transaction) => {
                 let transaction = OSKeyTxEip2930::from_proto(transaction)?;
                 let hash = transaction.hash();
-                let text = transaction.confirmation_text(&hash);
-                (hash, text)
+                let confirmation = transaction.confirmation(&hash);
+                (
+                    hash,
+                    proto::confirmation_prompt::Content::EthTransaction(confirmation),
+                )
             }
             proto::sign_eth_request::Tx::Eip191(message) => {
                 if message.is_personal == Some(false) {
@@ -689,9 +707,12 @@ impl<P: WalletPlatform> WalletApp<P> {
                 }
                 let hash =
                     oskey_chain::eth::OSKeyTxEip191::hash_message(message.message.as_bytes());
-                let text =
-                    oskey_chain::eth::OSKeyTxEip191::confirmation_text(&message.message, &hash);
-                (hash, text)
+                let confirmation =
+                    oskey_chain::eth::OSKeyTxEip191::confirmation(&message.message, &hash);
+                (
+                    hash,
+                    proto::confirmation_prompt::Content::EthMessage(confirmation),
+                )
             }
         };
 
@@ -702,7 +723,7 @@ impl<P: WalletPlatform> WalletApp<P> {
                 hash,
                 reply_to: source,
             },
-            display_text,
+            confirmation,
         ))
     }
 
@@ -852,13 +873,12 @@ impl<P: WalletPlatform> WalletApp<P> {
         )
     }
 
-    fn confirmation_prompt(kind: proto::ConfirmationKind, text: impl Into<String>) -> WalletOutput {
+    fn confirmation_prompt(content: proto::confirmation_prompt::Content) -> WalletOutput {
         Self::output(
             AppMessageSource::Confirmation,
             res_data::Payload::ConfirmationPrompt(proto::ConfirmationPrompt {
                 active: true,
-                kind: kind as i32,
-                text: text.into(),
+                content: Some(content),
             }),
         )
     }
@@ -868,8 +888,7 @@ impl<P: WalletPlatform> WalletApp<P> {
             AppMessageSource::Confirmation,
             res_data::Payload::ConfirmationPrompt(proto::ConfirmationPrompt {
                 active: false,
-                kind: proto::ConfirmationKind::Unspecified as i32,
-                text: String::new(),
+                content: None,
             }),
         )
     }
@@ -1075,10 +1094,9 @@ mod tests {
             Some(res_data::Payload::ConfirmationPrompt(
                 proto::ConfirmationPrompt {
                     active: true,
-                    kind,
-                    ..
+                    content: Some(proto::confirmation_prompt::Content::EthMessage(_)),
                 }
-            )) if kind == proto::ConfirmationKind::Sign as i32
+            ))
         ));
 
         let untrusted = external(
@@ -1121,7 +1139,14 @@ mod tests {
         else {
             panic!("expected confirmation prompt");
         };
-        assert!(prompt.text.len() < 512);
+        let Some(proto::confirmation_prompt::Content::EthMessage(confirmation)) = &prompt.content
+        else {
+            panic!("expected message confirmation");
+        };
+        assert!(confirmation.truncated);
+        assert!(confirmation.preview.len() <= 256);
+        assert_eq!(confirmation.byte_length, 8192);
+        assert_eq!(confirmation.signing_hash, expected_hash);
 
         let Some(PendingAction::Sign(pending)) = app.confirmation.pending() else {
             panic!("expected pending signature");
@@ -1190,7 +1215,12 @@ mod tests {
             &mut app,
             req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
                 active: true,
-                text: "Use security key".into(),
+                fido: Some(proto::FidoConfirmation {
+                    operation: proto::FidoOperation::Authenticate as i32,
+                    rp_id: "ssh:".into(),
+                    account: b"OSKey".to_vec(),
+                    account_is_text: true,
+                }),
             }),
             AppMessageSource::Fido2,
         );
@@ -1199,10 +1229,17 @@ mod tests {
             Some(res_data::Payload::ConfirmationPrompt(
                 proto::ConfirmationPrompt {
                     active: true,
-                    kind,
-                    ref text,
+                    content: Some(proto::confirmation_prompt::Content::Fido(
+                        proto::FidoConfirmation {
+                            operation,
+                            ref rp_id,
+                            ref account,
+                            account_is_text: true,
+                        }
+                    )),
                 }
-            )) if kind == proto::ConfirmationKind::Fido2 as i32 && text == "Use security key"
+            )) if operation == proto::FidoOperation::Authenticate as i32
+                && rp_id == "ssh:" && account == b"OSKey"
         ));
 
         let busy = external(&mut app, sign_request());
@@ -1230,21 +1267,51 @@ mod tests {
     }
 
     #[test]
-    fn fido2_confirmation_replaces_invalid_utf8() {
+    fn fido2_confirmation_rejects_invalid_rp_id() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         let output = runtime.message(
             AppMessageSource::Fido2,
             AppMessageAction::Confirmation,
-            1,
-            b"Use \xff key",
+            proto::FidoOperation::Register as u32,
+            b"site.\xff",
             &[],
         );
 
         assert!(matches!(
             output[0].response.payload,
+            Some(res_data::Payload::ConfirmationResult(
+                proto::ConfirmationResult { approved: false }
+            ))
+        ));
+    }
+
+    #[test]
+    fn fido2_local_message_keeps_confirmation_fields() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        let output = runtime.message(
+            AppMessageSource::Fido2,
+            AppMessageAction::Confirmation,
+            proto::FidoOperation::Register as u32,
+            b"example.com",
+            &[0, 1],
+        );
+
+        assert!(matches!(
+            output[0].response.payload,
             Some(res_data::Payload::ConfirmationPrompt(
-                proto::ConfirmationPrompt { ref text, .. }
-            )) if text == "Use \u{fffd} key"
+                proto::ConfirmationPrompt {
+                    active: true,
+                    content: Some(proto::confirmation_prompt::Content::Fido(
+                        proto::FidoConfirmation {
+                            operation,
+                            ref rp_id,
+                            ref account,
+                            account_is_text: false,
+                        }
+                    )),
+                }
+            )) if operation == proto::FidoOperation::Register as i32
+                && rp_id == "example.com" && account == &[0, 1]
         ));
     }
 
@@ -1256,7 +1323,12 @@ mod tests {
             &mut app,
             req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
                 active: true,
-                text: "Use security key".into(),
+                fido: Some(proto::FidoConfirmation {
+                    operation: proto::FidoOperation::Select as i32,
+                    rp_id: String::new(),
+                    account: Vec::new(),
+                    account_is_text: false,
+                }),
             }),
             AppMessageSource::Fido2,
         );
@@ -1264,7 +1336,7 @@ mod tests {
             &mut app,
             req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
                 active: false,
-                text: String::new(),
+                fido: None,
             }),
             AppMessageSource::Fido2,
         );

@@ -204,9 +204,7 @@ enum DisplayAction
 	DISPLAY_ACTION_UNSPECIFIED = 0;
 	DISPLAY_ACTION_READY = 1;
 	DISPLAY_ACTION_MNEMONIC = 2;
-	DISPLAY_ACTION_SIGN = 3;
 	DISPLAY_ACTION_ERROR = 4;
-	DISPLAY_ACTION_CONFIRM = 5;
 }
 
 message DisplayResponse
@@ -217,24 +215,60 @@ message DisplayResponse
 	uint32 value = 4;
 }
 
-enum ConfirmationKind
+enum FidoOperation
 {
-	CONFIRMATION_KIND_UNSPECIFIED = 0;
-	CONFIRMATION_KIND_SIGN = 1;
-	CONFIRMATION_KIND_FIDO2 = 2;
+	FIDO_OPERATION_UNSPECIFIED = 0;
+	FIDO_OPERATION_REGISTER = 1;
+	FIDO_OPERATION_AUTHENTICATE = 2;
+	FIDO_OPERATION_SELECT = 3;
+}
+
+message EthMessageConfirmation
+{
+	string preview = 1;
+	uint64 byte_length = 2;
+	bytes signing_hash = 3;
+	bool truncated = 4;
+}
+
+message EthTransactionConfirmation
+{
+	uint64 chain_id = 1;
+	uint64 nonce = 2;
+	string gas_price = 3;
+	uint64 gas_limit = 4;
+	bytes to = 5;
+	bool contract_creation = 6;
+	string value = 7;
+	uint64 input_length = 8;
+	bytes selector = 9;
+	bytes input_hash = 10;
+	bytes signing_hash = 11;
+}
+
+message FidoConfirmation
+{
+	FidoOperation operation = 1;
+	string rp_id = 2;
+	bytes account = 3;
+	bool account_is_text = 4;
 }
 
 message ConfirmationControl
 {
 	bool active = 1;
-	string text = 2;
+	FidoConfirmation fido = 2;
 }
 
 message ConfirmationPrompt
 {
 	bool active = 1;
-	ConfirmationKind kind = 2;
-	string text = 3;
+	oneof content
+	{
+		EthMessageConfirmation eth_message = 10;
+		EthTransactionConfirmation eth_transaction = 11;
+		FidoConfirmation fido = 12;
+	}
 }
 
 message ConfirmationResult

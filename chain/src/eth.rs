@@ -1,6 +1,5 @@
 extern crate alloc;
-use alloc::format;
-use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use alloy_consensus::private::alloy_primitives::{eip191_hash_message, keccak256, TxKind};
 use alloy_consensus::SignableTransaction;
@@ -17,24 +16,18 @@ impl OSKeyTxEip191 {
         eip191_hash_message(message).into()
     }
 
-    pub fn confirmation_text(message: &str, hash: &[u8; 32]) -> String {
+    pub fn confirmation(message: &str, hash: &[u8; 32]) -> proto::EthMessageConfirmation {
         let mut preview_end = message.len().min(MESSAGE_PREVIEW_BYTES);
         while !message.is_char_boundary(preview_end) {
             preview_end -= 1;
         }
 
-        let preview = &message[..preview_end];
-        let suffix = if preview_end < message.len() {
-            "..."
-        } else {
-            ""
-        };
-
-        format!(
-            "message:\n{preview}{suffix}\n\nmessage_length:\n{}\n\nhash:\n0x{}",
-            message.len(),
-            hex::encode(hash)
-        )
+        proto::EthMessageConfirmation {
+            preview: message[..preview_end].into(),
+            byte_length: message.len() as u64,
+            signing_hash: hash.to_vec(),
+            truncated: preview_end < message.len(),
+        }
     }
 }
 
@@ -82,28 +75,25 @@ impl OSKeyTxEip2930 {
         self.tx.signature_hash().into()
     }
 
-    pub fn confirmation_text(&self, hash: &[u8; 32]) -> String {
-        let to = match &self.tx.to {
-            TxKind::Call(address) => format!("0x{}", hex::encode(address.as_slice())),
-            TxKind::Create => "contract creation".into(),
+    pub fn confirmation(&self, hash: &[u8; 32]) -> proto::EthTransactionConfirmation {
+        let (to, contract_creation) = match &self.tx.to {
+            TxKind::Call(address) => (address.as_slice().to_vec(), false),
+            TxKind::Create => (Vec::new(), true),
         };
-        let selector = self.tx.input.get(..4).map_or_else(String::new, |input| {
-            format!("selector:\n0x{}\n\n", hex::encode(input))
-        });
 
-        format!(
-            "chain_id:\n{}\n\nnonce:\n{}\n\ngas_price:\n{}\n\ngas_limit:\n{}\n\nto:\n{}\n\nvalue:\n{}\n\ninput_length:\n{}\n\n{}input_hash:\n0x{}\n\nhash:\n0x{}",
-            self.tx.chain_id,
-            self.tx.nonce,
-            self.tx.gas_price,
-            self.tx.gas_limit,
+        proto::EthTransactionConfirmation {
+            chain_id: self.tx.chain_id,
+            nonce: self.tx.nonce,
+            gas_price: self.tx.gas_price.to_string(),
+            gas_limit: self.tx.gas_limit,
             to,
-            self.tx.value,
-            self.tx.input.len(),
-            selector,
-            hex::encode(keccak256(&self.tx.input)),
-            hex::encode(hash),
-        )
+            contract_creation,
+            value: self.tx.value.to_string(),
+            input_length: self.tx.input.len() as u64,
+            selector: self.tx.input.get(..4).unwrap_or_default().to_vec(),
+            input_hash: keccak256(&self.tx.input).to_vec(),
+            signing_hash: hash.to_vec(),
+        }
     }
 }
 
@@ -142,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmation_text() {
+    fn test_transaction_confirmation() {
         let source = proto::AppEthTxEip2930 {
             chain_id: 0xaa36a7,
             nonce: 0x5,
@@ -156,17 +146,20 @@ mod tests {
 
         let tx = OSKeyTxEip2930::from_proto(source).unwrap();
         let hash = tx.hash();
-        let text = tx.confirmation_text(&hash);
+        let confirmation = tx.confirmation(&hash);
 
-        assert!(text.contains("chain_id:\n11155111"));
-        assert!(text.contains("nonce:\n5"));
-        assert!(text.contains("gas_price:\n1112408"));
-        assert!(text.contains("gas_limit:\n21000"));
-        assert!(text.contains("to:\n0x00ab1ead740f95ade25b78b3137fdcc333326e7d"));
-        assert!(text.contains("input_length:\n2048"));
-        assert!(text.contains("selector:\n0xa9059cbb"));
-        assert!(text.contains(&hex::encode(hash)));
-        assert!(text.len() < 512);
+        assert_eq!(confirmation.chain_id, 11155111);
+        assert_eq!(confirmation.nonce, 5);
+        assert_eq!(confirmation.gas_price, "1112408");
+        assert_eq!(confirmation.gas_limit, 21000);
+        assert_eq!(
+            confirmation.to,
+            hex::decode("00ab1ead740f95ade25b78b3137fdcc333326e7d").unwrap()
+        );
+        assert!(!confirmation.contract_creation);
+        assert_eq!(confirmation.input_length, 2048);
+        assert_eq!(confirmation.selector, [0xa9, 0x05, 0x9c, 0xbb]);
+        assert_eq!(confirmation.signing_hash, hash);
     }
 
     #[test]
@@ -208,10 +201,14 @@ mod tests {
     fn test_message_confirmation_is_bounded() {
         let message = "测".repeat(4096);
         let hash = OSKeyTxEip191::hash_message(message.as_bytes());
-        let text = OSKeyTxEip191::confirmation_text(&message, &hash);
+        let confirmation = OSKeyTxEip191::confirmation(&message, &hash);
 
-        assert!(text.contains("...\n\nmessage_length:\n12288"));
-        assert!(text.contains(&hex::encode(hash)));
-        assert!(text.len() < 512);
+        assert!(confirmation.truncated);
+        assert_eq!(confirmation.byte_length, 12288);
+        assert_eq!(confirmation.signing_hash, hash);
+        assert!(confirmation.preview.len() <= MESSAGE_PREVIEW_BYTES);
+        assert!(confirmation
+            .preview
+            .is_char_boundary(confirmation.preview.len()));
     }
 }
