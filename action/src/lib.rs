@@ -480,6 +480,7 @@ impl<P: WalletPlatform> WalletApp<P> {
             return self.error(source, proto::AppError::ExternalRequestRequired);
         }
 
+        // TODO: Support transaction data and messages larger than 8 KiB without exhausting memory.
         let display_text = match Self::sign_display_text(&request) {
             Ok(text) => text,
             Err(_) => return self.error(source, proto::AppError::Failed),
