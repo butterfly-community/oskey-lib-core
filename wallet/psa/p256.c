@@ -3,6 +3,7 @@
 
 #include "p256.h"
 #include "psa_init.h"
+#include "scalar.h"
 
 static const uint8_t p256_n[32] = {
 	0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF,
@@ -10,66 +11,14 @@ static const uint8_t p256_n[32] = {
 	0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
 };
 
-static int scalar_cmp(const uint8_t *a, const uint8_t *b)
-{
-	uint32_t greater = 0;
-	uint32_t less = 0;
-
-	for (size_t i = 0; i < 32; i++) {
-		const uint32_t undecided = 1U ^ (greater | less);
-
-		greater |= ((uint32_t)b[i] - a[i]) >> 31 & undecided;
-		less |= ((uint32_t)a[i] - b[i]) >> 31 & undecided;
-	}
-	return (int)greater - (int)less;
-}
-
-static bool scalar_is_zero(const uint8_t *value)
-{
-	uint8_t result = 0;
-
-	for (size_t i = 0; i < 32; i++) {
-		result |= value[i];
-	}
-	return result == 0;
-}
-
-static void scalar_sub(uint8_t *value, const uint8_t *subtrahend)
-{
-	uint16_t borrow = 0;
-
-	for (size_t i = 32; i > 0; i--) {
-		const uint16_t minuend = value[i - 1];
-		const uint16_t sub = (uint16_t)subtrahend[i - 1] + borrow;
-		value[i - 1] = (uint8_t)(minuend - sub);
-		borrow = minuend < sub;
-	}
-}
-
 int psa_p256_validate_key(const uint8_t *private_key)
 {
-	return !scalar_is_zero(private_key) && scalar_cmp(private_key, p256_n) < 0 ? 0 : -1;
+	return psa_scalar_is_valid(private_key, p256_n) ? 0 : -1;
 }
 
 int psa_p256_add_num(const uint8_t *num1, const uint8_t *num2, uint8_t *result)
 {
-	uint16_t carry = 0;
-
-	if (psa_p256_validate_key(num1) || scalar_cmp(num2, p256_n) >= 0) {
-		return -1;
-	}
-
-	for (size_t i = 32; i > 0; i--) {
-		const uint16_t sum = (uint16_t)num1[i - 1] + num2[i - 1] + carry;
-		result[i - 1] = (uint8_t)sum;
-		carry = sum >> 8;
-	}
-
-	if (carry != 0 || scalar_cmp(result, p256_n) >= 0) {
-		scalar_sub(result, p256_n);
-	}
-
-	return scalar_is_zero(result) ? -1 : 0;
+	return psa_scalar_add(num1, num2, p256_n, result);
 }
 
 int32_t psa_p256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *public_key)

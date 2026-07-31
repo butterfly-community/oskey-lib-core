@@ -246,6 +246,9 @@ unsafe extern "C" {
     pub fn psa_k256_derive_pk_uncompressed(private_key: *const u8, public_key: *mut u8) -> i32;
 }
 unsafe extern "C" {
+    pub fn psa_k256_validate_key(private_key: *const u8) -> ::core::ffi::c_int;
+}
+unsafe extern "C" {
     pub fn psa_k256_add_num(
         num1: *const u8,
         num2: *const u8,

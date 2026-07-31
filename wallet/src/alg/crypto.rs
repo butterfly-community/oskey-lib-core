@@ -139,6 +139,16 @@ impl HMAC {
 
 impl K256 {
     #[cfg(feature = "crypto-rs")]
+    pub fn validate_key(key: &[u8]) -> bool {
+        K256SecretKey::from_slice(key).is_ok()
+    }
+
+    #[cfg(feature = "crypto-psa")]
+    pub fn validate_key(key: &[u8]) -> bool {
+        key.len() == 32 && unsafe { bindings::psa_k256_validate_key(key.as_ptr()) } == 0
+    }
+
+    #[cfg(feature = "crypto-rs")]
     pub fn export_pk_compressed(sk: &[u8]) -> Result<[u8; 33]> {
         if sk.len() != 32 {
             bail!("sk len not 32, current {}", sk.len())
@@ -188,26 +198,34 @@ impl K256 {
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn tweak_key(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
-        let sk1 = K256SecretKey::from_slice(num1).map_err(|e| anyhow!(e))?;
-        let sk2 = K256SecretKey::from_slice(num2).map_err(|e| anyhow!(e))?;
-        let new_secret_key = sk1
-            .to_nonzero_scalar()
-            .add(&sk2.to_nonzero_scalar())
-            .to_bytes();
-        Ok(new_secret_key.into())
+    pub fn tweak_key(parent: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
+        use k256::elliptic_curve::PrimeField;
+        use k256::{FieldBytes, Scalar};
+
+        let parent = K256SecretKey::from_slice(parent).map_err(|e| anyhow!(e))?;
+        let tweak: FieldBytes = tweak.try_into()?;
+        let tweak = Option::<Scalar>::from(Scalar::from_repr(tweak))
+            .ok_or_else(|| anyhow!("Invalid K256 tweak"))?;
+        let child = *parent.to_nonzero_scalar().as_ref() + tweak;
+        if bool::from(child.is_zero()) {
+            bail!("Invalid K256 child key");
+        }
+        Ok(child.to_bytes().into())
     }
 
     #[cfg(feature = "crypto-psa")]
-    pub fn tweak_key(num1: &[u8], num2: &[u8]) -> Result<[u8; 32]> {
-        let mut result = [0u8; 32];
+    pub fn tweak_key(parent: &[u8], tweak: &[u8]) -> Result<[u8; 32]> {
+        if parent.len() != 32 || tweak.len() != 32 {
+            bail!("K256 scalars must contain 32 bytes");
+        }
+        let mut child = [0u8; 32];
         let status = unsafe {
-            bindings::psa_k256_add_num(num1.as_ptr(), num2.as_ptr(), result.as_mut_ptr())
+            bindings::psa_k256_add_num(parent.as_ptr(), tweak.as_ptr(), child.as_mut_ptr())
         };
         if status == 0 {
-            Ok(result)
+            Ok(child)
         } else {
-            anyhow::bail!("{}", status)
+            bail!("{}", status)
         }
     }
 
@@ -643,6 +661,24 @@ mod tests {
 
         let long_pk = vec![1u8; 33];
         assert!(K256::export_pk_compressed(&long_pk).is_err());
+    }
+
+    #[test]
+    fn test_k256_scalar_boundaries() {
+        let order = hex::decode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+            .unwrap();
+        let mut last_valid = order.clone();
+        last_valid[31] -= 1;
+
+        assert!(K256::validate_key(&last_valid));
+        assert!(!K256::validate_key(&order));
+        assert!(!K256::validate_key(&[0; 32]));
+
+        let mut one = [0; 32];
+        one[31] = 1;
+        assert_eq!(K256::tweak_key(&one, &[0; 32]).unwrap(), one);
+        assert!(K256::tweak_key(&one, &last_valid).is_err());
+        assert!(K256::tweak_key(&one, &order).is_err());
     }
 
     #[test]

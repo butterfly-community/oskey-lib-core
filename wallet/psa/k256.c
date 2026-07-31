@@ -1,7 +1,9 @@
 #include <psa/crypto.h>
 #include <string.h>
-#include "option.h"
+
+#include "k256.h"
 #include "psa_init.h"
+#include "scalar.h"
 
 int32_t psa_k256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *public_key)
 {
@@ -55,67 +57,24 @@ static const uint8_t k256_half_n[32] = {
 	0x50, 0x1D, 0xDF, 0xE9, 0x2F, 0x46, 0x68, 0x1B, 0x20, 0xA0,
 };
 
-static int k256_scalar_cmp(const uint8_t *a, const uint8_t *b)
+int psa_k256_validate_key(const uint8_t *private_key)
 {
-	for (size_t i = 0; i < 32; i++) {
-		if (a[i] != b[i]) {
-			return a[i] < b[i] ? -1 : 1;
-		}
-	}
-	return 0;
-}
-
-static void k256_scalar_sub(uint8_t *value, const uint8_t *subtrahend)
-{
-	uint16_t borrow = 0;
-
-	for (size_t i = 32; i > 0; i--) {
-		const uint16_t minuend = value[i - 1];
-		const uint16_t sub = (uint16_t)subtrahend[i - 1] + borrow;
-		value[i - 1] = (uint8_t)(minuend - sub);
-		borrow = minuend < sub;
-	}
-}
-
-static void k256_scalar_reduce(uint8_t *value)
-{
-	if (k256_scalar_cmp(value, k256_n) >= 0) {
-		k256_scalar_sub(value, k256_n);
-	}
+	return psa_scalar_is_valid(private_key, k256_n) ? 0 : -1;
 }
 
 int psa_k256_add_num(const uint8_t *num1, const uint8_t *num2, uint8_t *result)
 {
-	uint8_t a[32];
-	uint8_t b[32];
-	uint16_t carry = 0;
-
-	memcpy(a, num1, sizeof(a));
-	memcpy(b, num2, sizeof(b));
-	k256_scalar_reduce(a);
-	k256_scalar_reduce(b);
-
-	for (size_t i = 32; i > 0; i--) {
-		const uint16_t sum = (uint16_t)a[i - 1] + b[i - 1] + carry;
-		result[i - 1] = (uint8_t)sum;
-		carry = sum >> 8;
-	}
-
-	if (carry != 0 || k256_scalar_cmp(result, k256_n) >= 0) {
-		k256_scalar_sub(result, k256_n);
-	}
-
-	return 0;
+	return psa_scalar_add(num1, num2, k256_n, result);
 }
 
 static void psa_normalize_signature(uint8_t *sig)
 {
 	uint8_t *s = sig + 32;
 
-	if (k256_scalar_cmp(s, k256_half_n) > 0) {
+	if (psa_scalar_cmp(s, k256_half_n) > 0) {
 		uint8_t normalized[32];
 		memcpy(normalized, k256_n, sizeof(normalized));
-		k256_scalar_sub(normalized, s);
+		psa_scalar_sub(normalized, s);
 		memcpy(s, normalized, sizeof(normalized));
 	}
 }
