@@ -31,7 +31,6 @@ impl FrameParser {
     }
 
     pub fn push(&mut self, data: &[u8]) {
-        // TODO: Add a bounded or streaming parser without rejecting large wallet messages.
         self.buffer.extend_from_slice(data);
     }
 

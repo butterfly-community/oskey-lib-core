@@ -251,8 +251,6 @@ impl<P: WalletPlatform> WalletApp<P> {
                 _ => {}
             }
 
-            // TODO: Dispatch independent requests to a separate worker. Until then,
-            // reject requests while user confirmation is pending.
             return self.error(source, proto::AppError::Busy);
         }
 
@@ -480,7 +478,8 @@ impl<P: WalletPlatform> WalletApp<P> {
             return self.error(source, proto::AppError::ExternalRequestRequired);
         }
 
-        // TODO: Support transaction data and messages larger than 8 KiB without exhausting memory.
+        // TODO: Support transaction data and messages larger than 8 KiB end to end with
+        // bounded or streaming frame parsing and paged confirmation display.
         let display_text = match Self::sign_display_text(&request) {
             Ok(text) => text,
             Err(_) => return self.error(source, proto::AppError::Failed),
