@@ -1,30 +1,58 @@
 extern crate alloc;
-use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloy_consensus::private::alloy_primitives::{eip191_hash_message, keccak256, TxKind};
 use alloy_consensus::SignableTransaction;
 use alloy_consensus::TxEip2930;
 use anyhow::{anyhow, Result};
-use core::fmt;
 use oskey_bus::proto;
+
+const MESSAGE_PREVIEW_BYTES: usize = 256;
+
 pub struct OSKeyTxEip191;
 
 impl OSKeyTxEip191 {
     pub fn hash_message(message: &[u8]) -> [u8; 32] {
         eip191_hash_message(message).into()
     }
+
+    pub fn confirmation_text(message: &str, hash: &[u8; 32]) -> String {
+        let mut preview_end = message.len().min(MESSAGE_PREVIEW_BYTES);
+        while !message.is_char_boundary(preview_end) {
+            preview_end -= 1;
+        }
+
+        let preview = &message[..preview_end];
+        let suffix = if preview_end < message.len() {
+            "..."
+        } else {
+            ""
+        };
+
+        format!(
+            "message:\n{preview}{suffix}\n\nmessage_length:\n{}\n\nhash:\n0x{}",
+            message.len(),
+            hex::encode(hash)
+        )
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OSKeyTxEip2930 {
     pub tx: TxEip2930,
 }
 
 impl OSKeyTxEip2930 {
     pub fn from_proto(proto: proto::AppEthTxEip2930) -> Result<Self> {
+        if proto
+            .access_list
+            .as_ref()
+            .is_some_and(|access_list| !access_list.is_empty())
+        {
+            return Err(anyhow!("EIP-2930 access lists are unsupported"));
+        }
+
         let tx = TxEip2930 {
             chain_id: proto.chain_id,
             nonce: proto.nonce,
@@ -38,63 +66,44 @@ impl OSKeyTxEip2930 {
                 .value
                 .parse()
                 .map_err(|_| anyhow!("u256 parse error"))?,
-            input: proto.input.unwrap_or(vec![]).into(),
-            access_list: vec![].into(),
+            input: proto.input.unwrap_or_default().into(),
+            access_list: Default::default(),
         };
         Ok(Self { tx })
     }
 
     pub fn rlp_encode(&self) -> Vec<u8> {
-        let mut rlp_buffer = Vec::new();
+        let mut rlp_buffer = Vec::with_capacity(self.tx.payload_len_for_signature());
         self.tx.encode_for_signing(&mut rlp_buffer);
         rlp_buffer
     }
 
     pub fn hash(&self) -> [u8; 32] {
-        let rlp = self.rlp_encode();
-        keccak256(&rlp).into()
+        self.tx.signature_hash().into()
     }
 
-    pub fn fields(&self) -> BTreeMap<String, String> {
-        let mut map = BTreeMap::new();
-
-        let to_address = match &self.tx.to {
-            TxKind::Call(addr) => "0x".to_string() + &hex::encode(addr.as_slice()),
-            TxKind::Create => "0x".to_string(),
+    pub fn confirmation_text(&self, hash: &[u8; 32]) -> String {
+        let to = match &self.tx.to {
+            TxKind::Call(address) => format!("0x{}", hex::encode(address.as_slice())),
+            TxKind::Create => "contract creation".into(),
         };
+        let selector = self.tx.input.get(..4).map_or_else(String::new, |input| {
+            format!("selector:\n0x{}\n\n", hex::encode(input))
+        });
 
-        let input_data = if self.tx.input.len() > 512 {
-            format!("0x{}...", hex::encode(&self.tx.input[..512]))
-        } else {
-            format!("0x{}", hex::encode(&self.tx.input))
-        };
-
-        insert_field!(map, self.tx, chain_id);
-        insert_field!(map, self.tx, nonce);
-        insert_field!(map, self.tx, gas_price);
-        insert_field!(map, self.tx, gas_limit);
-        insert_field!(map, self.tx, to, to_address);
-        insert_field!(map, self.tx, value);
-        insert_field!(map, self.tx, input, input_data);
-        map.insert(
-            "hash".to_string(),
-            "0x".to_string() + &hex::encode(self.hash()),
-        );
-
-        map
-    }
-}
-
-impl fmt::Display for OSKeyTxEip2930 {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (key, value) in self.fields() {
-            f.write_str("\n")?;
-            f.write_str(&key)?;
-            f.write_str(":\n")?;
-            f.write_str(&value)?;
-            f.write_str("\n\n")?;
-        }
-        Ok(())
+        format!(
+            "chain_id:\n{}\n\nnonce:\n{}\n\ngas_price:\n{}\n\ngas_limit:\n{}\n\nto:\n{}\n\nvalue:\n{}\n\ninput_length:\n{}\n\n{}input_hash:\n0x{}\n\nhash:\n0x{}",
+            self.tx.chain_id,
+            self.tx.nonce,
+            self.tx.gas_price,
+            self.tx.gas_limit,
+            to,
+            self.tx.value,
+            self.tx.input.len(),
+            selector,
+            hex::encode(keccak256(&self.tx.input)),
+            hex::encode(hash),
+        )
     }
 }
 
@@ -103,6 +112,7 @@ mod tests {
     extern crate std;
     use super::*;
     use alloc::string::ToString;
+    use alloc::vec;
 
     #[test]
     fn test_eth_eip2930_transaction() {
@@ -132,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn test_display_methods() {
+    fn test_confirmation_text() {
         let source = proto::AppEthTxEip2930 {
             chain_id: 0xaa36a7,
             nonce: 0x5,
@@ -140,25 +150,39 @@ mod tests {
             gas_limit: 0x5208,
             to: Some("0x00Ab1EAd740f95aDE25b78B3137fdcC333326e7d".to_string()),
             value: "0x16345785d8a0000".to_string(),
-            input: None,
+            input: Some([0xa9, 0x05, 0x9c, 0xbb].repeat(512)),
             access_list: None,
         };
 
         let tx = OSKeyTxEip2930::from_proto(source).unwrap();
+        let hash = tx.hash();
+        let text = tx.confirmation_text(&hash);
 
-        let display_map = tx.fields();
+        assert!(text.contains("chain_id:\n11155111"));
+        assert!(text.contains("nonce:\n5"));
+        assert!(text.contains("gas_price:\n1112408"));
+        assert!(text.contains("gas_limit:\n21000"));
+        assert!(text.contains("to:\n0x00ab1ead740f95ade25b78b3137fdcc333326e7d"));
+        assert!(text.contains("input_length:\n2048"));
+        assert!(text.contains("selector:\n0xa9059cbb"));
+        assert!(text.contains(&hex::encode(hash)));
+        assert!(text.len() < 512);
+    }
 
-        assert_eq!(display_map.get("chain_id").unwrap(), "11155111");
-        assert_eq!(display_map.get("nonce").unwrap(), "5");
-        assert_eq!(display_map.get("gas_price").unwrap(), "1112408");
-        assert_eq!(display_map.get("gas_limit").unwrap(), "21000");
-        assert_eq!(
-            display_map.get("to").unwrap(),
-            "0x00ab1ead740f95ade25b78b3137fdcc333326e7d"
-        );
-        assert_eq!(display_map.get("input").unwrap(), "0x");
+    #[test]
+    fn test_rejects_nonempty_access_list() {
+        let source = proto::AppEthTxEip2930 {
+            chain_id: 1,
+            nonce: 0,
+            gas_price: "1".to_string(),
+            gas_limit: 21000,
+            to: None,
+            value: "0".to_string(),
+            input: None,
+            access_list: Some(vec![0xc0]),
+        };
 
-        std::println!("{}", tx);
+        assert!(OSKeyTxEip2930::from_proto(source).is_err());
     }
 
     #[test]
@@ -178,5 +202,16 @@ mod tests {
         let hello_bytes = b"hello world";
         let hello_bytes_hash = OSKeyTxEip191::hash_message(hello_bytes);
         assert_eq!(hello_hash, hello_bytes_hash);
+    }
+
+    #[test]
+    fn test_message_confirmation_is_bounded() {
+        let message = "测".repeat(4096);
+        let hash = OSKeyTxEip191::hash_message(message.as_bytes());
+        let text = OSKeyTxEip191::confirmation_text(&message, &hash);
+
+        assert!(text.contains("...\n\nmessage_length:\n12288"));
+        assert!(text.contains(&hex::encode(hash)));
+        assert!(text.len() < 512);
     }
 }

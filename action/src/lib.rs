@@ -12,6 +12,7 @@ use oskey_bus::proto::{req_data, res_data};
 pub use oskey_bus::{proto, FrameParser, Message};
 use oskey_chain::eth::OSKeyTxEip2930;
 use oskey_wallet::alg::crypto;
+use oskey_wallet::path::DerivationPath;
 use oskey_wallet::{mnemonic, wallets};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -65,11 +66,12 @@ pub trait WalletPlatform {
 }
 
 struct PendingSign {
-    request: proto::SignEthRequest,
+    id: i32,
+    path: DerivationPath,
+    hash: [u8; 32],
     reply_to: AppMessageSource,
 }
 
-#[allow(clippy::large_enum_variant)]
 enum PendingAction {
     Sign(PendingSign),
     Fido2,
@@ -478,17 +480,13 @@ impl<P: WalletPlatform> WalletApp<P> {
             return self.error(source, proto::AppError::ExternalRequestRequired);
         }
 
-        // TODO: Support transaction data and messages larger than 8 KiB end to end with
-        // bounded or streaming frame parsing and paged confirmation display.
-        let display_text = match Self::sign_display_text(&request) {
-            Ok(text) => text,
+        // TODO: Support requests larger than 8 KiB with chunked transport and streaming hashing.
+        let (pending, display_text) = match Self::prepare_sign(source, request) {
+            Ok(prepared) => prepared,
             Err(_) => return self.error(source, proto::AppError::Failed),
         };
 
-        if !self.confirmation.request(PendingAction::Sign(PendingSign {
-            request,
-            reply_to: source,
-        })) {
+        if !self.confirmation.request(PendingAction::Sign(pending)) {
             return self.error(source, proto::AppError::Busy);
         }
 
@@ -519,13 +517,15 @@ impl<P: WalletPlatform> WalletApp<P> {
 
         let mut outputs = match pending {
             PendingAction::Sign(pending) => match action {
-                proto::UserAction::Approve => match self.sign(pending.request) {
-                    Ok(payload) => vec![Self::output(pending.reply_to, payload)],
-                    Err(_) => vec![Self::error_output(
-                        pending.reply_to,
-                        proto::AppError::Failed,
-                    )],
-                },
+                proto::UserAction::Approve => {
+                    let reply_to = pending.reply_to;
+                    match self.sign(pending) {
+                        Ok(payload) => vec![Self::output(reply_to, payload)],
+                        Err(_) => {
+                            vec![Self::error_output(reply_to, proto::AppError::Failed)]
+                        }
+                    }
+                }
                 proto::UserAction::Reject => {
                     vec![Self::error_output(
                         pending.reply_to,
@@ -668,54 +668,61 @@ impl<P: WalletPlatform> WalletApp<P> {
         }
     }
 
-    fn sign(&self, request: proto::SignEthRequest) -> Result<res_data::Payload> {
-        let tx = request
-            .tx
-            .ok_or_else(|| anyhow!("Transaction data is missing"))?;
-        let hash = match tx {
+    fn prepare_sign(
+        source: AppMessageSource,
+        request: proto::SignEthRequest,
+    ) -> Result<(PendingSign, String)> {
+        let proto::SignEthRequest { id, path, tx, .. } = request;
+        let path = path.parse()?;
+        let tx = tx.ok_or_else(|| anyhow!("Transaction data is missing"))?;
+
+        let (hash, display_text) = match tx {
             proto::sign_eth_request::Tx::Eip2930(transaction) => {
-                OSKeyTxEip2930::from_proto(transaction)?.hash()
+                let transaction = OSKeyTxEip2930::from_proto(transaction)?;
+                let hash = transaction.hash();
+                let text = transaction.confirmation_text(&hash);
+                (hash, text)
             }
             proto::sign_eth_request::Tx::Eip191(message) => {
-                oskey_chain::eth::OSKeyTxEip191::hash_message(message.message.as_bytes())
+                if message.is_personal == Some(false) {
+                    return Err(anyhow!("Non-personal message signing is unsupported"));
+                }
+                let hash =
+                    oskey_chain::eth::OSKeyTxEip191::hash_message(message.message.as_bytes());
+                let text =
+                    oskey_chain::eth::OSKeyTxEip191::confirmation_text(&message.message, &hash);
+                (hash, text)
             }
         };
 
+        Ok((
+            PendingSign {
+                id,
+                path,
+                hash,
+                reply_to: source,
+            },
+            display_text,
+        ))
+    }
+
+    fn sign(&self, pending: PendingSign) -> Result<res_data::Payload> {
         let private_key = wallets::ExtendedPrivKey::derive(
             &self.load_seed()?,
-            request.path.parse()?,
+            pending.path,
             wallets::Curve::K256,
         )?;
         let public_key = private_key.export_pk()?.to_vec();
-        let signature = private_key.sign(&hash)?;
+        let signature = private_key.sign(&pending.hash)?;
 
         Ok(res_data::Payload::SignResponse(proto::SignResponse {
-            id: request.id,
+            id: pending.id,
             message: Vec::new(),
             public_key,
-            pre_hash: hash.to_vec(),
+            pre_hash: pending.hash.to_vec(),
             signature: signature.to_vec(),
             recovery_id: None,
         }))
-    }
-
-    fn sign_display_text(request: &proto::SignEthRequest) -> Result<String> {
-        match request
-            .tx
-            .as_ref()
-            .ok_or_else(|| anyhow!("Transaction data is missing"))?
-        {
-            proto::sign_eth_request::Tx::Eip2930(transaction) => {
-                Ok(OSKeyTxEip2930::from_proto(transaction.clone())?.to_string())
-            }
-            proto::sign_eth_request::Tx::Eip191(message) => {
-                let mut text: String = message.message.chars().take(512).collect();
-                if text.len() < message.message.len() {
-                    text.push_str("...");
-                }
-                Ok(text)
-            }
-        }
     }
 
     fn set_request_pin(
@@ -985,11 +992,15 @@ mod tests {
     }
 
     fn sign_request() -> req_data::Payload {
+        sign_request_with_message("hello".into())
+    }
+
+    fn sign_request_with_message(message: String) -> req_data::Payload {
         req_data::Payload::SignEthRequest(proto::SignEthRequest {
             id: 1,
             path: "m/44'/60'/0'/0/0".into(),
             tx: Some(proto::sign_eth_request::Tx::Eip191(proto::AppEthTxEip191 {
-                message: "hello".into(),
+                message,
                 is_personal: None,
             })),
             debug_text: None,
@@ -1088,10 +1099,69 @@ mod tests {
             }),
             AppMessageSource::Confirmation,
         );
+        let Some(res_data::Payload::SignResponse(response)) = &approved[0].response.payload else {
+            panic!("expected sign response");
+        };
+        assert_eq!(
+            response.pre_hash,
+            oskey_chain::eth::OSKeyTxEip191::hash_message(b"hello")
+        );
+    }
+
+    #[test]
+    fn large_message_is_released_before_confirmation() {
+        let mut app = WalletApp::new(TestPlatform::new(false));
+        external(&mut app, init_request());
+
+        let message = "a".repeat(8192);
+        let expected_hash = oskey_chain::eth::OSKeyTxEip191::hash_message(message.as_bytes());
+        let output = external(&mut app, sign_request_with_message(message));
+
+        let Some(res_data::Payload::ConfirmationPrompt(prompt)) = &output[1].response.payload
+        else {
+            panic!("expected confirmation prompt");
+        };
+        assert!(prompt.text.len() < 512);
+
+        let Some(PendingAction::Sign(pending)) = app.confirmation.pending() else {
+            panic!("expected pending signature");
+        };
+        assert_eq!(pending.hash, expected_hash);
+
+        let approved = request(
+            &mut app,
+            req_data::Payload::UserActionRequest(proto::UserActionRequest {
+                action: proto::UserAction::Approve as i32,
+            }),
+            AppMessageSource::Confirmation,
+        );
+        let Some(res_data::Payload::SignResponse(response)) = &approved[0].response.payload else {
+            panic!("expected sign response");
+        };
+        assert_eq!(response.pre_hash, expected_hash);
+    }
+
+    #[test]
+    fn unsupported_message_mode_is_rejected_before_confirmation() {
+        let mut app = WalletApp::new(TestPlatform::new(false));
+        external(&mut app, init_request());
+        let payload = req_data::Payload::SignEthRequest(proto::SignEthRequest {
+            id: 1,
+            path: "m/44'/60'/0'/0/0".into(),
+            tx: Some(proto::sign_eth_request::Tx::Eip191(proto::AppEthTxEip191 {
+                message: "hello".into(),
+                is_personal: Some(false),
+            })),
+            debug_text: None,
+        });
+
+        let output = external(&mut app, payload);
+
         assert!(matches!(
-            approved[0].response.payload,
-            Some(res_data::Payload::SignResponse(_))
+            output[0].response.payload,
+            Some(res_data::Payload::ErrorResponse(_))
         ));
+        assert!(!app.confirmation.is_waiting());
     }
 
     #[test]

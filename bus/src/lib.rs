@@ -25,6 +25,7 @@ impl Default for FrameParser {
 impl FrameParser {
     const MAGIC: &'static [u8] = "₿".as_bytes();
     const HEADER_LEN: usize = Self::MAGIC.len() + 2;
+    const MAX_RETAINED_FRAME_CAPACITY: usize = 1024;
 
     pub const fn new() -> Self {
         Self { buffer: Vec::new() }
@@ -70,7 +71,13 @@ impl FrameParser {
 
         let decoded = proto::ReqData::decode(&self.buffer[Self::HEADER_LEN..frame_len]);
 
-        self.buffer.drain(..frame_len);
+        if frame_len == self.buffer.len()
+            && self.buffer.capacity() > Self::MAX_RETAINED_FRAME_CAPACITY
+        {
+            self.buffer = Vec::new();
+        } else {
+            self.buffer.drain(..frame_len);
+        }
         Some(decoded.map_err(|e| anyhow!(e)))
     }
 
@@ -153,6 +160,17 @@ mod tests {
         assert_eq!(payload.encode_to_vec(), bytes);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_large_consumed_buffer_is_released() {
+        let frame = FrameParser::pack(&get_test_req_payload_bytes());
+        let mut parser = FrameParser::new();
+        parser.buffer.reserve(8192);
+        parser.push(&frame);
+
+        assert!(parser.unpack().unwrap().is_ok());
+        assert_eq!(parser.buffer.capacity(), 0);
     }
 
     #[test]
