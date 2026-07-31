@@ -73,7 +73,11 @@ impl ExtendedPrivKey {
         let (secret_key, chain_code): ([u8; 32], [u8; 32]) = match curve {
             Curve::K256 | Curve::P256 => {
                 let mut result = HMAC::hmac_sha512(curve.seed_key(), seed)?;
-                while curve == Curve::P256 && !P256::validate_key(&result[..32]) {
+                while match curve {
+                    Curve::K256 => !K256::validate_key(&result[..32]),
+                    Curve::P256 => !P256::validate_key(&result[..32]),
+                    _ => unreachable!(),
+                } {
                     result = HMAC::hmac_sha512(curve.seed_key(), &result)?;
                 }
                 let (sk, cc) = result.split_at(32);
@@ -122,27 +126,23 @@ impl ExtendedPrivKey {
                 bytes.extend(&child.to_bytes())?;
 
                 let i = HMAC::hmac_sha512(&self.chain_code, &bytes.into_vec())?;
-                let (child_sk, chain_code) = match self.curve {
-                    Curve::K256 => {
-                        let (il, ir) = i.split_at(32);
-                        (K256::tweak_key(&self.secret_key, il)?, ir.try_into()?)
+                let mut i = i;
+                let (child_sk, chain_code) = loop {
+                    let (il, ir) = i.split_at(32);
+                    let child_key = match self.curve {
+                        Curve::K256 => K256::tweak_key(&self.secret_key, il),
+                        Curve::P256 => P256::tweak_key(&self.secret_key, il),
+                        _ => unreachable!(),
+                    };
+                    if let Ok(key) = child_key {
+                        break (key, ir.try_into()?);
                     }
-                    Curve::P256 => {
-                        let mut i = i;
-                        loop {
-                            let (il, ir) = i.split_at(32);
-                            if let Ok(key) = P256::tweak_key(&self.secret_key, il) {
-                                break (key, ir.try_into()?);
-                            }
 
-                            let mut retry = ByteVec::<128>::new();
-                            retry.push(1)?;
-                            retry.extend(ir)?;
-                            retry.extend(&child.to_bytes())?;
-                            i = HMAC::hmac_sha512(&self.chain_code, &retry.into_vec())?;
-                        }
-                    }
-                    _ => unreachable!(),
+                    let mut retry = ByteVec::<128>::new();
+                    retry.push(1)?;
+                    retry.extend(ir)?;
+                    retry.extend(&child.to_bytes())?;
+                    i = HMAC::hmac_sha512(&self.chain_code, &retry.into_vec())?;
                 };
                 Ok(ExtendedPrivKey {
                     curve: self.curve,
