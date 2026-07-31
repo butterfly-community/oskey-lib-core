@@ -4,7 +4,7 @@ members = ["wallet", "bus", "chain", "action"]
 
 [workspace.dependencies]
 oskey-bus = { path = "bus" }
-oskey-chain = { path = "chain" }
+oskey-chain = { path = "chain", default-features = false }
 oskey-wallet = { path = "wallet" }
 
 anyhow = { version = "1.0", default-features = false }

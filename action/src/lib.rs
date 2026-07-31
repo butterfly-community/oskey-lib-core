@@ -611,8 +611,8 @@ impl<P: WalletPlatform> WalletApp<P> {
         }
 
         let result: Result<res_data::Payload> = (|| {
-            let nonce = self.platform.random(oskey_wallet::fido2::NONCE_SIZE);
-            let credential = oskey_wallet::fido2::create(
+            let nonce = self.platform.random(oskey_chain::fido::NONCE_SIZE);
+            let credential = oskey_chain::fido::create(
                 &self.load_seed()?,
                 &request.rp_id,
                 nonce.as_slice().try_into()?,
@@ -643,10 +643,10 @@ impl<P: WalletPlatform> WalletApp<P> {
 
         let result: Result<Vec<u8>> = self.load_seed().and_then(|seed| {
             if request.hash.is_empty() {
-                oskey_wallet::fido2::validate(&seed, &request.credential_id, &request.rp_id_hash)
+                oskey_chain::fido::validate(&seed, &request.credential_id, &request.rp_id_hash)
                     .map(|_| Vec::new())
             } else {
-                oskey_wallet::fido2::sign(
+                oskey_chain::fido::sign(
                     &seed,
                     &request.credential_id,
                     &request.rp_id_hash,

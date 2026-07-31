@@ -1,7 +1,7 @@
-use crate::alg::crypto::{Hash, HMAC, P256};
-use crate::path::{ChildNumber, DerivationPath};
-use crate::wallets::{Curve, ExtendedPrivKey};
 use anyhow::{bail, Result};
+use oskey_wallet::alg::crypto::{Hash, HMAC, P256};
+use oskey_wallet::path::{ChildNumber, DerivationPath};
+use oskey_wallet::wallets::{Curve, ExtendedPrivKey};
 
 pub const CREDENTIAL_ID_SIZE: usize = 64;
 pub const NONCE_SIZE: usize = 16;
