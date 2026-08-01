@@ -804,8 +804,11 @@ impl<P: WalletPlatform> WalletApp<P> {
 
         let mut nonce = [0; 12];
         nonce.copy_from_slice(&stored[..12]);
-        crypto::ChaCha20Poly1305Cipher::decrypt(&self.pin_cache, &nonce, &stored[12..])
-            .map(|seed| Zeroizing::new(seed.as_slice().to_vec()))
+        let mut seed =
+            crypto::ChaCha20Poly1305Cipher::decrypt(&self.pin_cache, &nonce, &stored[12..])?;
+        let result = Zeroizing::new(seed.as_slice().to_vec());
+        seed.as_mut_slice().zeroize();
+        Ok(result)
     }
 
     fn external_display_operation(&self, source: AppMessageSource) -> bool {

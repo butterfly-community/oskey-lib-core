@@ -2,6 +2,7 @@
 use crate::alg::bindings;
 use anyhow::{anyhow, bail, Ok, Result};
 use heapless::Vec;
+use zeroize::Zeroize;
 #[cfg(feature = "crypto-rs")]
 use {
     chacha20poly1305::ChaCha20Poly1305,
@@ -586,18 +587,14 @@ impl ChaCha20Poly1305Cipher {
 
         let cipher = ChaCha20Poly1305::new(key.into());
 
-        let bytes = cipher
+        let mut bytes = cipher
             .decrypt(nonce.into(), ciphertext)
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
-        let mut result = heapless::Vec::new();
-        for byte in bytes {
-            result
-                .push(byte)
-                .map_err(|_| anyhow!("Result buffer too small"))?;
-        }
-
-        Ok(result)
+        let result =
+            heapless::Vec::from_slice(&bytes).map_err(|_| anyhow!("Result buffer too small"));
+        bytes.zeroize();
+        result
     }
 
     #[cfg(feature = "crypto-psa")]
@@ -622,15 +619,14 @@ impl ChaCha20Poly1305Cipher {
         };
 
         if status != 0 {
+            bytes.zeroize();
             anyhow::bail!("ChaCha20Poly1305 decryption failed with status: {}", status);
         }
 
-        let mut result = heapless::Vec::new();
+        let result = heapless::Vec::from_slice(&bytes[..bytes_len])
+            .map_err(|_| anyhow!("Result buffer too small"));
+        bytes.zeroize();
         result
-            .extend_from_slice(&bytes[..bytes_len])
-            .map_err(|_| anyhow!("Result buffer too small"))?;
-
-        Ok(result)
     }
 }
 
