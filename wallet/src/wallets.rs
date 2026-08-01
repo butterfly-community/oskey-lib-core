@@ -51,7 +51,6 @@ impl Curve {
     }
 }
 
-#[derive(Clone, PartialEq, Hash, Eq, Debug)]
 pub struct ExtendedPrivKey {
     pub curve: Curve,
     pub depth: u8,

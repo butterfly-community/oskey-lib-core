@@ -6,7 +6,6 @@ use heapless::{String, Vec};
 use crate::alg::crypto::{Hash, PBKDF2};
 use crate::alg::word_list::ENGLISH_WORDS;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mnemonic {
     pub words: Vec<&'static str, 24>,
 }
@@ -49,7 +48,6 @@ impl Mnemonic {
             bail!("Invalid entropy length")
         }
 
-        let entropy_len = entropy.len() * 8;
         let checksum_len = entropy_len / 32;
 
         let mut full_bits = BitVec::with_capacity(entropy_len + checksum_len);
