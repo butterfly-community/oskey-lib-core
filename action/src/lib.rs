@@ -499,9 +499,7 @@ impl<P: WalletPlatform> WalletApp<P> {
             Err(_) => return self.error(source, proto::AppError::Failed),
         };
 
-        if !self.confirmation.request(PendingAction::Sign(pending)) {
-            return self.error(source, proto::AppError::Busy);
-        }
+        self.confirmation.start(PendingAction::Sign(pending));
 
         vec![
             Self::output(
@@ -577,13 +575,10 @@ impl<P: WalletPlatform> WalletApp<P> {
             let Some(fido) = request.fido else {
                 return self.error(source, proto::AppError::InvalidAction);
             };
-            if !self.confirmation.request(PendingAction::Fido2) {
-                vec![Self::confirmation_result(source, false)]
-            } else {
-                vec![Self::confirmation_prompt(
-                    proto::confirmation_prompt::Content::Fido(fido),
-                )]
-            }
+            self.confirmation.start(PendingAction::Fido2);
+            vec![Self::confirmation_prompt(
+                proto::confirmation_prompt::Content::Fido(fido),
+            )]
         } else if matches!(self.confirmation.pending(), Some(PendingAction::Fido2)) {
             self.confirmation.finish();
             vec![Self::confirmation_finished()]

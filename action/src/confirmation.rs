@@ -15,13 +15,9 @@ impl<T> ConfirmationService<T> {
         self.pending.as_ref()
     }
 
-    pub(crate) fn request(&mut self, pending: T) -> bool {
-        if self.pending.is_some() {
-            false
-        } else {
-            self.pending = Some(pending);
-            true
-        }
+    pub(crate) fn start(&mut self, pending: T) {
+        debug_assert!(self.pending.is_none());
+        self.pending = Some(pending);
     }
 
     pub(crate) fn finish(&mut self) -> Option<T> {
