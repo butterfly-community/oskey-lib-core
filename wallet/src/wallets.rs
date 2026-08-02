@@ -77,7 +77,7 @@ impl ExtendedPrivKey {
                     Curve::P256 => !P256::validate_key(&result[..32]),
                     _ => unreachable!(),
                 } {
-                    result = HMAC::hmac_sha512(curve.seed_key(), &result)?;
+                    result = HMAC::hmac_sha512(curve.seed_key(), result.as_ref())?;
                 }
                 let (sk, cc) = result.split_at(32);
                 (sk.try_into().unwrap(), cc.try_into().unwrap())
@@ -124,7 +124,7 @@ impl ExtendedPrivKey {
                 }
                 bytes.extend(&child.to_bytes())?;
 
-                let i = HMAC::hmac_sha512(&self.chain_code, &bytes.into_vec())?;
+                let i = HMAC::hmac_sha512(&self.chain_code, bytes.as_slice())?;
                 let mut i = i;
                 let (child_sk, chain_code) = loop {
                     let (il, ir) = i.split_at(32);
@@ -141,7 +141,7 @@ impl ExtendedPrivKey {
                     retry.push(1)?;
                     retry.extend(ir)?;
                     retry.extend(&child.to_bytes())?;
-                    i = HMAC::hmac_sha512(&self.chain_code, &retry.into_vec())?;
+                    i = HMAC::hmac_sha512(&self.chain_code, retry.as_slice())?;
                 };
                 Ok(ExtendedPrivKey {
                     curve: self.curve,
@@ -158,7 +158,7 @@ impl ExtendedPrivKey {
                 data.extend(&self.secret_key)?;
                 data.extend(&child.to_bytes())?;
 
-                let i = HMAC::hmac_sha512(&self.chain_code, &data.into_vec())?;
+                let i = HMAC::hmac_sha512(&self.chain_code, data.as_slice())?;
                 let (sk, cc) = i.split_at(32);
 
                 Ok(ExtendedPrivKey {
@@ -198,14 +198,14 @@ impl ExtendedPrivKey {
         match self.curve {
             Curve::K256 => {
                 let sig = K256::sign(&self.secret_key, msg)?;
-                Ok(Vec::from_slice(&sig.signature).expect("Signature fits in Vec<u8, 64>"))
+                Ok(Vec::from_slice(&sig).expect("Signature fits in Vec<u8, 64>"))
             }
             Curve::Ed25519 => {
                 let sig = Ed25519::sign(&self.secret_key, msg)?;
                 Ok(Vec::from_slice(&sig).expect("Signature fits in Vec<u8, 64>"))
             }
             Curve::Curve25519 => Err(anyhow!("X25519 keys cannot be used for signing")),
-            _ => unreachable!(),
+            Curve::P256 => Err(anyhow!("P-256 signing is not supported by this interface")),
         }
     }
 
@@ -232,7 +232,7 @@ impl ExtendedPrivKey {
 #[cfg(test)]
 mod test {
     extern crate alloc;
-    use alloc::{vec, vec::Vec};
+    use alloc::{string::ToString, vec, vec::Vec};
     use core::{str, str::FromStr};
     use heapless::String;
 
@@ -677,7 +677,7 @@ mod test {
 
         // 7. Base58Check
         let mut base58 = [0u8; 256];
-        let len = bs58::encode(&data.clone().into_vec())
+        let len = bs58::encode(data.as_slice())
             .with_check()
             .onto(&mut base58[..])
             .map_err(|e| anyhow!(e))?;
@@ -718,5 +718,17 @@ mod test {
     #[test]
     fn test_slip10_p256() -> Result<()> {
         run_test_vector(get_slip10_p256_vector(), Curve::P256)
+    }
+
+    #[test]
+    fn test_extended_p256_sign_returns_error() -> Result<()> {
+        let key = ExtendedPrivKey::derive(&[0; 16], "m".parse()?, Curve::P256)?;
+        let error = key.sign(&[0; 32]).err().unwrap();
+
+        assert_eq!(
+            error.to_string(),
+            "P-256 signing is not supported by this interface"
+        );
+        Ok(())
     }
 }

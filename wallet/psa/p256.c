@@ -44,7 +44,10 @@ int32_t psa_p256_derive_pk_uncompressed(const uint8_t *private_key, uint8_t *pub
 	}
 
 	status = psa_export_public_key(key_id, public_key, 65, &output_length);
-	psa_destroy_key(key_id);
+	psa_status_t destroy_status = psa_destroy_key(key_id);
+	if (status == PSA_SUCCESS) {
+		status = destroy_status;
+	}
 	if (status == PSA_SUCCESS && output_length != 65) {
 		return PSA_ERROR_DATA_INVALID;
 	}
@@ -90,7 +93,10 @@ int32_t psa_p256_sign_hash(const uint8_t *private_key, const uint8_t *hash, size
 
 	status = psa_sign_hash(key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256), hash, hash_length, signature,
 			       64, &signature_length);
-	psa_destroy_key(key_id);
+	psa_status_t destroy_status = psa_destroy_key(key_id);
+	if (status == PSA_SUCCESS) {
+		status = destroy_status;
+	}
 	if (status == PSA_SUCCESS && signature_length != 64) {
 		return PSA_ERROR_DATA_INVALID;
 	}

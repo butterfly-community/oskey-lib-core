@@ -1,6 +1,6 @@
 use anyhow::anyhow;
+use zeroize::Zeroize;
 
-#[derive(Clone)]
 pub struct ByteVec<const N: usize> {
     inner: heapless::Vec<u8, N>,
 }
@@ -22,7 +22,15 @@ impl<const N: usize> ByteVec<N> {
             .map_err(|_| anyhow!("Buffer full"))
     }
 
-    pub fn into_vec(self) -> heapless::Vec<u8, N> {
-        self.inner
+    pub fn as_slice(&self) -> &[u8] {
+        self.inner.as_slice()
+    }
+}
+
+impl<const N: usize> Drop for ByteVec<N> {
+    fn drop(&mut self) {
+        for byte in self.inner.iter_mut() {
+            byte.zeroize();
+        }
     }
 }

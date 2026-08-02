@@ -19,6 +19,7 @@ int32_t psa_hmac_sha512_wrapper(const uint8_t *message, size_t message_len, cons
 	psa_set_key_bits(&attributes, PSA_BYTES_TO_BITS(key_len));
 
 	status = psa_import_key(&attributes, key, key_len, &key_id);
+	psa_reset_key_attributes(&attributes);
 	if (status != PSA_SUCCESS) {
 		return status;
 	}
@@ -26,6 +27,12 @@ int32_t psa_hmac_sha512_wrapper(const uint8_t *message, size_t message_len, cons
 	status = psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_512), message, message_len,
 				 output, 64, &output_len);
 
-	psa_destroy_key(key_id);
+	psa_status_t destroy_status = psa_destroy_key(key_id);
+	if (status == PSA_SUCCESS) {
+		status = destroy_status;
+	}
+	if (status == PSA_SUCCESS && output_len != 64) {
+		return PSA_ERROR_DATA_INVALID;
+	}
 	return status;
 }

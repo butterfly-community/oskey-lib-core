@@ -16,5 +16,7 @@ int psa_x25519_export_pk_from_secret(const uint8_t *secret32, uint8_t *out33)
 
 	out33[0] = 0x00;
 	memcpy(out33 + 1, pub, 32);
+	compact_wipe(seed, sizeof(seed));
+	compact_wipe(priv, sizeof(priv));
 	return 0;
 }

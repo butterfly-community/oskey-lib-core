@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use bit_vec::BitVec;
-use core::fmt::Write;
-use heapless::{String, Vec};
+use heapless::Vec;
+use zeroize::Zeroizing;
 
 use crate::alg::crypto::{Hash, PBKDF2};
 use crate::alg::word_list::ENGLISH_WORDS;
@@ -12,7 +12,12 @@ pub struct Mnemonic {
 
 impl Mnemonic {
     pub fn from_phrase(phrase: &str) -> Result<Self> {
-        let original_words: Vec<&str, 24> = phrase.split_whitespace().collect();
+        let mut original_words = Vec::<&str, 24>::new();
+        for word in phrase.split_whitespace() {
+            original_words
+                .push(word)
+                .map_err(|_| anyhow!("Invalid entropy length"))?;
+        }
         let original_bits = Self::words_to_bits(&original_words)?;
 
         let entropy = Self::bits_to_entropy(&original_bits)?;
@@ -35,10 +40,18 @@ impl Mnemonic {
     }
 
     pub fn to_seed(&self, salt: &str) -> Result<[u8; 64]> {
-        let mut new_salt = String::<256>::new();
-        write!(new_salt, "mnemonic{}", salt)?;
+        const PREFIX: &[u8] = b"mnemonic";
+        if PREFIX.len() + salt.len() > 256 {
+            bail!("Mnemonic salt is too long")
+        }
 
-        PBKDF2::hmac_sha512(self.words.join(" ").as_str(), new_salt.as_str(), 2048)
+        let mut salt_bytes = Zeroizing::new([0; 256]);
+        salt_bytes[..PREFIX.len()].copy_from_slice(PREFIX);
+        salt_bytes[PREFIX.len()..PREFIX.len() + salt.len()].copy_from_slice(salt.as_bytes());
+        let new_salt = core::str::from_utf8(&salt_bytes[..PREFIX.len() + salt.len()])?;
+        let phrase = Zeroizing::new(self.words.join(" "));
+
+        PBKDF2::hmac_sha512(phrase.as_str(), new_salt, 2048)
     }
 
     fn entropy_to_bits(entropy: &[u8]) -> Result<BitVec> {
@@ -136,7 +149,7 @@ mod test {
     extern crate alloc;
 
     use super::*;
-    use alloc::{vec, vec::Vec};
+    use alloc::{string::ToString, vec, vec::Vec};
 
     pub fn get_test_vector() -> Vec<[&'static str; 4]> {
         let test_vectors = vec![
@@ -339,5 +352,13 @@ mod test {
             let mnemonic = Mnemonic::from_phrase(case);
             assert!(mnemonic.is_err());
         }
+    }
+
+    #[test]
+    pub fn test_mnemonic_rejects_more_than_24_words() {
+        let phrase = ["abandon"; 25].join(" ");
+        let error = Mnemonic::from_phrase(&phrase).err().unwrap();
+
+        assert_eq!(error.to_string(), "Invalid entropy length");
     }
 }

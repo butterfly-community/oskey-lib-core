@@ -2,7 +2,7 @@
 use crate::alg::bindings;
 use anyhow::{anyhow, bail, Ok, Result};
 use heapless::Vec;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 #[cfg(feature = "crypto-rs")]
 use {
     chacha20poly1305::ChaCha20Poly1305,
@@ -33,14 +33,6 @@ pub struct Ed25519;
 pub struct Curve25519;
 pub struct P256;
 pub struct ChaCha20Poly1305Cipher;
-
-#[derive(Debug, Clone)]
-pub struct K256AppSignature {
-    pub public_key: [u8; 65],
-    pub pre_hash: [u8; 32],
-    pub signature: [u8; 64],
-    pub recovery_id: Option<u8>,
-}
 
 impl Hash {
     #[cfg(feature = "crypto-psa")]
@@ -109,18 +101,18 @@ impl PBKDF2 {
 
 impl HMAC {
     #[cfg(feature = "crypto-rs")]
-    pub fn hmac_sha512(secret: &[u8], message: &[u8]) -> Result<[u8; 64]> {
+    pub fn hmac_sha512(secret: &[u8], message: &[u8]) -> Result<Zeroizing<[u8; 64]>> {
         let hmac = <Hmac<Sha512> as hmac::KeyInit>::new_from_slice(secret)
             .map_err(|e| anyhow!(e))?
             .chain_update(message)
             .finalize()
             .into_bytes();
-        Ok(hmac.into())
+        Ok(Zeroizing::new(hmac.into()))
     }
 
     #[cfg(feature = "crypto-psa")]
-    pub fn hmac_sha512(secret: &[u8], message: &[u8]) -> Result<[u8; 64]> {
-        let mut seed = [0u8; 64];
+    pub fn hmac_sha512(secret: &[u8], message: &[u8]) -> Result<Zeroizing<[u8; 64]>> {
+        let mut seed = Zeroizing::new([0u8; 64]);
         let status = unsafe {
             bindings::psa_hmac_sha512_wrapper(
                 message.as_ptr(),
@@ -231,20 +223,23 @@ impl K256 {
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256AppSignature> {
+    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<[u8; 64]> {
+        if sk_bytes.len() != 32 || data.len() != 32 {
+            bail!("K256 key and hash must contain 32 bytes");
+        }
         let sk = K256SecretKey::from_slice(sk_bytes).map_err(|e| anyhow!(e))?;
         let signing_key = K256SigningKey::from(sk);
-        let signature = signing_key.sign_prehash_recoverable(data);
-        let result = K256AppSignature {
-            public_key: Self::export_pk(sk_bytes)?,
-            pre_hash: data.try_into()?,
-            signature: signature.0.to_bytes().into(),
-            recovery_id: signature.1.to_byte().into(),
-        };
-        Ok(result)
+        Ok(signing_key
+            .sign_prehash_recoverable(data)
+            .0
+            .to_bytes()
+            .into())
     }
     #[cfg(feature = "crypto-psa")]
-    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<K256AppSignature> {
+    pub fn sign(sk_bytes: &[u8], data: &[u8]) -> Result<[u8; 64]> {
+        if sk_bytes.len() != 32 || data.len() != 32 {
+            bail!("K256 key and hash must contain 32 bytes");
+        }
         let mut result = [0u8; 64];
         let status = unsafe {
             bindings::psa_k256_sign_hash(
@@ -257,12 +252,6 @@ impl K256 {
         if status != 0 {
             anyhow::bail!("{}", status);
         }
-        let result = K256AppSignature {
-            public_key: Self::export_pk(sk_bytes)?,
-            pre_hash: data.try_into()?,
-            signature: result,
-            recovery_id: None,
-        };
         Ok(result)
     }
 }
@@ -639,6 +628,22 @@ mod tests {
     use hex;
 
     #[test]
+    fn test_pbkdf2_repeated_operations() {
+        let expected = hex::decode(
+            "867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252\
+             c02d470a285a0501bad999bfe943c08f050235d7d68b1da55e63f73b60a57fce",
+        )
+        .unwrap();
+
+        for _ in 0..64 {
+            assert_eq!(
+                PBKDF2::hmac_sha512("password", "salt", 1).unwrap(),
+                expected.as_slice()
+            );
+        }
+    }
+
+    #[test]
     fn test_k256_invalid_private_keys() {
         let zero_pk = vec![0u8; 32];
         assert!(K256::export_pk_compressed(&zero_pk).is_err());
@@ -678,6 +683,15 @@ mod tests {
     }
 
     #[test]
+    fn test_k256_sign_rejects_short_key_and_hash() {
+        let key = [1; 32];
+        let hash = [2; 32];
+
+        assert!(K256::sign(&key[..31], &hash).is_err());
+        assert!(K256::sign(&key, &hash[..31]).is_err());
+    }
+
+    #[test]
     fn test_k256_sign_1() {
         let hex = hex::decode("780293f5138d6713e369b0faa692d3d61ec66426c9e34461281b7ca75a5aa284")
             .unwrap();
@@ -689,7 +703,7 @@ mod tests {
 
         let result = K256::sign(&sk, &hex).unwrap();
 
-        assert_eq!(hex::encode(result.signature), signature);
+        assert_eq!(hex::encode(result), signature);
     }
 
     #[test]
@@ -704,7 +718,7 @@ mod tests {
 
         let result = K256::sign(&sk, &hex).unwrap();
 
-        assert_eq!(hex::encode(result.signature), signature);
+        assert_eq!(hex::encode(result), signature);
     }
 
     #[test]

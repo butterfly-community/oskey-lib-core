@@ -23,6 +23,7 @@ int32_t psa_chacha20poly1305_encrypt(const uint8_t *key, const uint8_t *nonce,
 	psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_ENCRYPT);
 
 	status = psa_import_key(&attributes, key, 32, &key_id);
+	psa_reset_key_attributes(&attributes);
 	if (status != PSA_SUCCESS) {
 		return status;
 	}
@@ -30,7 +31,10 @@ int32_t psa_chacha20poly1305_encrypt(const uint8_t *key, const uint8_t *nonce,
 	status = psa_aead_encrypt(key_id, PSA_ALG_CHACHA20_POLY1305, nonce, 12, NULL, 0, plaintext,
 				  plaintext_len, ciphertext, ciphertext_size, ciphertext_len);
 
-	psa_destroy_key(key_id);
+	psa_status_t destroy_status = psa_destroy_key(key_id);
+	if (status == PSA_SUCCESS) {
+		status = destroy_status;
+	}
 
 	return status;
 }
@@ -54,6 +58,7 @@ int32_t psa_chacha20poly1305_decrypt(const uint8_t *key, const uint8_t *nonce,
 	psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_DECRYPT);
 
 	status = psa_import_key(&attributes, key, 32, &key_id);
+	psa_reset_key_attributes(&attributes);
 	if (status != PSA_SUCCESS) {
 		return status;
 	}
@@ -61,7 +66,10 @@ int32_t psa_chacha20poly1305_decrypt(const uint8_t *key, const uint8_t *nonce,
 	status = psa_aead_decrypt(key_id, PSA_ALG_CHACHA20_POLY1305, nonce, 12, NULL, 0, ciphertext,
 				  ciphertext_len, plaintext, plaintext_size, plaintext_len);
 
-	psa_destroy_key(key_id);
+	psa_status_t destroy_status = psa_destroy_key(key_id);
+	if (status == PSA_SUCCESS) {
+		status = destroy_status;
+	}
 
 	return status;
 }

@@ -17,6 +17,8 @@ int psa_ed25519_export_pk_from_seed(const uint8_t *seed32, uint8_t *out33)
 
 	out33[0] = 0x00;
 	memcpy(out33 + 1, pub, 32);
+	compact_wipe(seed, sizeof(seed));
+	compact_wipe(priv, sizeof(priv));
 	return 0;
 }
 
@@ -34,5 +36,7 @@ int psa_ed25519_sign_from_seed(const uint8_t *seed32, const uint8_t *msg, size_t
 	compact_ed25519_keygen(priv, pub, seed);
 
 	compact_ed25519_sign(sig64, priv, msg, msg_len);
+	compact_wipe(seed, sizeof(seed));
+	compact_wipe(priv, sizeof(priv));
 	return 0;
 }
