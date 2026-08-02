@@ -21,7 +21,7 @@ crypto-rs = [
   "dep:x25519-dalek",
   "dep:chacha20poly1305",
 ]
-build = ["dep:bindgen", "dep:cmake"]
+build = ["dep:bindgen", "dep:cmake", "dep:pkg-config"]
 
 [dependencies]
 anyhow.workspace = true
@@ -46,3 +46,4 @@ bs58.workspace = true
 [build-dependencies]
 bindgen = { workspace = true, optional = true }
 cmake = { workspace = true, optional = true }
+pkg-config = { workspace = true, optional = true }
