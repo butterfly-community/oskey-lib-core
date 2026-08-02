@@ -5,10 +5,9 @@ A secure, embedded-friendly cryptocurrency wallet library for hardware wallets.
 ## Packages
 
 - **wallet** - BIP-32/39/44 and SLIP-0010 compliant HD wallet implementation with multi-curve support (secp256k1, Ed25519, Curve25519, P256)
-- **bus** - Protocol Buffers communication with custom framing for hardware-software interaction
+- **protocol** - Protocol Buffers communication with custom framing for hardware-software interaction
 - **chain** - Blockchain-specific transaction encoding and signing, currently implements Ethereum (EIP-2930/EIP-191)
 - **action** - High-level wallet operations with trait-based callbacks for platform abstraction
-- **bridge** - Client-device communication bridge layer
 
 ## References
 

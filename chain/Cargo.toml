@@ -12,7 +12,6 @@ crypto-psa = ["oskey-wallet/crypto-psa"]
 crypto-link = ["oskey-wallet/crypto-psa", "oskey-wallet/build"]
 
 [dependencies]
-oskey-bus.workspace = true
 oskey-wallet.workspace = true
 
 alloy-consensus.workspace = true

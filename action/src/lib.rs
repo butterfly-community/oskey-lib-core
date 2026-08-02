@@ -4,13 +4,14 @@ extern crate alloc;
 
 mod confirmation;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
-use oskey_bus::proto::{req_data, res_data};
-pub use oskey_bus::{proto, FrameParser, Message};
-use oskey_chain::eth::OSKeyTxEip2930;
+use oskey_chain::eth::{Eip2930Transaction, OSKeyTxEip2930};
+pub use oskey_chain::{ConfirmationDetails, FidoOperation};
+use oskey_protocol::proto::{req_data, res_data};
+pub use oskey_protocol::{proto, FrameParser, Message};
 use oskey_wallet::alg::crypto;
 use oskey_wallet::path::DerivationPath;
 use oskey_wallet::{mnemonic, wallets};
@@ -19,49 +20,185 @@ use zeroize::{Zeroize, Zeroizing};
 use confirmation::ConfirmationService;
 
 const PIN_SALT: &[u8] = b"&%OSKey1$!@";
+const MAX_FAILED_UNLOCKS: u8 = 10;
+const STORED_SEED_BYTES: usize = 92;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AppMessageSource {
-    Uart = 0,
-    Bluetooth = 1,
-    Display = 2,
-    Fido2 = 4,
-    Confirmation = 5,
+fn mnemonic_entropy_bytes(words: u32) -> Result<usize> {
+    match words {
+        12 => Ok(16),
+        15 => Ok(20),
+        18 => Ok(24),
+        21 => Ok(28),
+        24 => Ok(32),
+        _ => Err(anyhow!("Invalid mnemonic length")),
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AppMessageAction {
-    External = 0,
+pub enum Transport {
+    Uart,
+    Bluetooth,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransportRoute {
+    pub transport: Transport,
+    pub session_id: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalRequestKind {
     Unlock,
     InitCustom,
     GenerateMnemonic,
-    Approve,
-    Reject,
     Restart,
     ResetStorage,
-    Fido2Register,
-    Fido2Sign,
-    Confirmation,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FidoRequestKind {
+    Register,
+    Validate,
+    Sign,
+    Confirm,
+    CancelConfirmation,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FidoStatus {
+    Success,
+    Failed,
+    Cancelled,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalAction {
+    Ready,
+    Mnemonic,
+    Error,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfirmationChoice {
+    Approve,
+    Reject,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfirmationOutcome {
+    Approved,
+    Rejected,
+    Cancelled,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WalletState {
+    Disabled,
+    Setup,
+    Locked,
+    Ready,
+    Busy,
+}
+
+pub enum LocalRequest<'a> {
+    Unlock(&'a str),
+    InitCustom { words: &'a str, pin: &'a str },
+    GenerateMnemonic { words: u32, entropy: &'a [u8] },
+    Restart,
+    ResetStorage,
+}
+
+pub enum FidoRequest<'a> {
+    Register {
+        rp_id: &'a str,
+        cred_protect: u8,
+    },
+    Validate {
+        credential_id: &'a [u8],
+        rp_id_hash: &'a [u8],
+    },
+    Sign {
+        credential_id: &'a [u8],
+        rp_id_hash: &'a [u8],
+        hash: &'a [u8],
+    },
+    Confirm {
+        operation: FidoOperation,
+        rp_id: &'a [u8],
+        account: &'a [u8],
+    },
+    CancelConfirmation,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct LocalResult {
+    pub action: LocalAction,
+    pub error: proto::AppError,
+    pub value: u32,
+    pub text: String,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct FidoOutput {
+    pub status: FidoStatus,
+    pub credential_id: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq)]
-pub struct WalletOutput {
-    pub target: AppMessageSource,
-    pub response: proto::ResData,
+pub enum CoreEffect {
+    Transport(TransportRoute, proto::ResData),
+    Local(LocalResult),
+    Fido {
+        id: u32,
+        result: FidoOutput,
+    },
+    ConfirmationRequired(u32),
+    ConfirmationCompleted {
+        id: u32,
+        outcome: ConfirmationOutcome,
+    },
+    WalletState(WalletState),
+}
+
+pub enum CoreRequest<'a> {
+    Protocol {
+        route: TransportRoute,
+        data: &'a [u8],
+    },
+    Local(LocalRequest<'a>),
+    Fido {
+        id: u32,
+        request: FidoRequest<'a>,
+    },
+    Confirm {
+        id: u32,
+        choice: ConfirmationChoice,
+    },
 }
 
 pub trait WalletPlatform {
     fn version(&self) -> String;
     fn serial_number(&self) -> String;
     fn support_mask(&self) -> Vec<u8>;
+    fn local_ui_enabled(&self) -> bool;
     fn storage_ready(&self) -> bool;
-    fn seed_exists(&self) -> bool;
+    fn seed_exists(&self) -> Result<bool>;
     fn random(&self, len: usize) -> Vec<u8>;
     fn read_seed(&self, data: &mut [u8]) -> Result<usize>;
     fn write_seed(&self, data: &[u8]) -> Result<()>;
-    fn reset_storage(&self);
+    fn unlock_failures(&self) -> Result<u8>;
+    fn write_unlock_failures(&self, failures: u8) -> bool;
+    fn reset_storage(&self) -> bool;
     fn restart(&self);
 }
 
@@ -69,12 +206,25 @@ struct PendingSign {
     id: i32,
     path: DerivationPath,
     hash: [u8; 32],
-    reply_to: AppMessageSource,
+    public_key: Vec<u8>,
+    reply_to: TransportRoute,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum PendingAction {
     Sign(PendingSign),
-    Fido2,
+    Fido(u32),
+}
+
+enum UnlockFailure {
+    Attempts(u8),
+    Reset,
+    Storage,
+}
+
+enum SeedLoadError {
+    Credentials,
+    Storage,
 }
 
 struct WalletApp<P> {
@@ -82,12 +232,22 @@ struct WalletApp<P> {
     pin_cache: [u8; 32],
     locked: bool,
     failed_unlocks: u8,
+    storage_failed: bool,
     confirmation: ConfirmationService<PendingAction>,
+}
+
+impl<P> Drop for WalletApp<P> {
+    fn drop(&mut self) {
+        self.pin_cache.zeroize();
+    }
 }
 
 pub struct WalletRuntime<P> {
     uart_parser: FrameParser,
     bluetooth_parser: FrameParser,
+    bluetooth_session: u32,
+    uart_busy_notified: bool,
+    bluetooth_busy_session: Option<u32>,
     app: WalletApp<P>,
 }
 
@@ -96,194 +256,158 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         Self {
             uart_parser: FrameParser::new(),
             bluetooth_parser: FrameParser::new(),
+            bluetooth_session: 0,
+            uart_busy_notified: false,
+            bluetooth_busy_session: None,
             app: WalletApp::new(platform),
         }
     }
 
-    fn external(&mut self, source: AppMessageSource, data: &[u8]) -> Vec<WalletOutput> {
-        let parser = match source {
-            AppMessageSource::Uart => &mut self.uart_parser,
-            AppMessageSource::Bluetooth => &mut self.bluetooth_parser,
-            _ => return Vec::new(),
-        };
-
-        parser.push(data);
-        let mut outputs = Vec::new();
-        while let Some(request) = parser.unpack() {
-            match request {
-                Ok(request) => outputs.extend(self.app.handle(source, request)),
-                Err(_) => outputs.push(WalletApp::<P>::error_output(
-                    source,
-                    proto::AppError::Failed,
-                )),
-            }
-        }
-        outputs
+    pub fn state(&self) -> WalletState {
+        self.app.state()
     }
 
-    pub fn message(
-        &mut self,
-        source: AppMessageSource,
-        action: AppMessageAction,
-        value: u32,
-        data: &[u8],
-        auxiliary: &[u8],
-    ) -> Vec<WalletOutput> {
-        if action == AppMessageAction::External {
-            return self.external(source, data);
-        }
+    pub fn confirmation(&self, id: u32) -> Option<&ConfirmationDetails> {
+        self.app.confirmation.details(id)
+    }
 
-        if !matches!(
-            source,
-            AppMessageSource::Display | AppMessageSource::Fido2 | AppMessageSource::Confirmation
-        ) {
-            return Vec::new();
-        }
-
-        let request: Result<proto::ReqData> = (|| {
-            let payload = match action {
-                AppMessageAction::Unlock => {
-                    req_data::Payload::UnlockRequest(proto::UnlockRequest {
-                        hash: Vec::new(),
-                        pin_text: Some(core::str::from_utf8(data)?.to_string()),
-                    })
-                }
-                AppMessageAction::InitCustom => {
-                    req_data::Payload::InitCustomRequest(proto::InitWalletCustomRequest {
-                        words: core::str::from_utf8(data)?.to_string(),
-                        password: String::new(),
-                        pin: Vec::new(),
-                        pin_text: Some(core::str::from_utf8(auxiliary)?.to_string()),
-                    })
-                }
-                AppMessageAction::GenerateMnemonic => {
-                    req_data::Payload::GenerateMnemonicRequest(proto::GenerateMnemonicRequest {
-                        length: value,
-                        entropy: (!data.is_empty()).then(|| data.to_vec()),
-                    })
-                }
-                AppMessageAction::Approve | AppMessageAction::Reject => {
-                    req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                        action: if action == AppMessageAction::Approve {
-                            proto::UserAction::Approve as i32
-                        } else {
-                            proto::UserAction::Reject as i32
-                        },
-                    })
-                }
-                AppMessageAction::Restart | AppMessageAction::ResetStorage => {
-                    req_data::Payload::DeviceRequest(proto::DeviceRequest {
-                        action: if action == AppMessageAction::Restart {
-                            proto::DeviceAction::Restart as i32
-                        } else {
-                            proto::DeviceAction::ResetStorage as i32
-                        },
-                    })
-                }
-                AppMessageAction::Fido2Register => {
-                    req_data::Payload::Fido2RegisterRequest(proto::Fido2RegisterRequest {
-                        rp_id: core::str::from_utf8(data)?.to_string(),
-                    })
-                }
-                AppMessageAction::Fido2Sign => {
-                    if !matches!(auxiliary.len(), 32 | 64) {
-                        return Err(anyhow!("Invalid FIDO2 signing request"));
+    pub fn handle(&mut self, request: CoreRequest<'_>) -> Vec<CoreEffect> {
+        let was_busy = self.app.is_busy();
+        let effects = match request {
+            CoreRequest::Protocol { route, data } => {
+                let parser = match route.transport {
+                    Transport::Uart => &mut self.uart_parser,
+                    Transport::Bluetooth => {
+                        if self.bluetooth_session != route.session_id {
+                            self.bluetooth_parser.clear();
+                            self.bluetooth_session = route.session_id;
+                        }
+                        &mut self.bluetooth_parser
                     }
-                    req_data::Payload::Fido2SignRequest(proto::Fido2SignRequest {
-                        credential_id: data.to_vec(),
-                        rp_id_hash: auxiliary[..32].to_vec(),
-                        hash: auxiliary.get(32..).unwrap_or_default().to_vec(),
-                    })
-                }
-                AppMessageAction::Confirmation => {
-                    let active = value != 0;
-                    let fido = if active {
-                        let operation = proto::FidoOperation::try_from(i32::try_from(value)?)?;
-                        Some(oskey_chain::fido::confirmation(operation, data, auxiliary)?)
-                    } else {
-                        None
-                    };
-                    req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
-                        active,
-                        fido,
-                    })
-                }
-                AppMessageAction::External => return Err(anyhow!("Invalid local message action")),
-            };
-            Ok(proto::ReqData {
-                payload: Some(payload),
-            })
-        })();
+                };
 
-        match request {
-            Ok(request) => self.app.handle(source, request),
-            Err(_) if source == AppMessageSource::Display => {
-                vec![WalletApp::<P>::display_error(proto::AppError::Failed, 0)]
+                if self.app.is_busy() {
+                    parser.clear();
+                    let notify = match route.transport {
+                        Transport::Uart => {
+                            let notify = !self.uart_busy_notified;
+                            self.uart_busy_notified = true;
+                            notify
+                        }
+                        Transport::Bluetooth => {
+                            let notify = self.bluetooth_busy_session != Some(route.session_id);
+                            self.bluetooth_busy_session = Some(route.session_id);
+                            notify
+                        }
+                    };
+                    if notify {
+                        self.app
+                            .transport_error_output(route, proto::AppError::Busy)
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    parser.push(data);
+                    let mut effects = Vec::new();
+                    while let Some(request) = parser.unpack() {
+                        match request {
+                            Ok(request) => effects.extend(self.app.handle_protocol(route, request)),
+                            Err(_) => effects.push(WalletApp::<P>::transport_error(
+                                route,
+                                proto::AppError::Failed,
+                            )),
+                        }
+                        if self.app.is_busy() {
+                            parser.clear();
+                            break;
+                        }
+                    }
+                    effects
+                }
             }
-            Err(_)
-                if source == AppMessageSource::Fido2
-                    && action == AppMessageAction::Confirmation =>
-            {
-                vec![WalletApp::<P>::confirmation_result(source, false)]
-            }
-            Err(_) => vec![WalletApp::<P>::error_output(
-                source,
-                proto::AppError::Failed,
-            )],
+            CoreRequest::Local(request) => self.app.handle_local(request),
+            CoreRequest::Fido { id, request } => self.app.handle_fido(id, request),
+            CoreRequest::Confirm { id, choice } => self.app.handle_confirmation(id, choice),
+        };
+
+        if was_busy && !self.app.is_busy() {
+            self.uart_busy_notified = false;
+            self.bluetooth_busy_session = None;
         }
+        effects
     }
 }
 
 impl<P: WalletPlatform> WalletApp<P> {
     fn new(platform: P) -> Self {
-        let locked = platform.seed_exists();
+        let (mut locked, mut failed_unlocks, storage_failed) = match platform.seed_exists() {
+            Ok(false) => (false, 0, false),
+            Ok(true) => match platform.unlock_failures() {
+                Ok(failures) => (true, failures.min(MAX_FAILED_UNLOCKS), false),
+                Err(_) => (true, MAX_FAILED_UNLOCKS, true),
+            },
+            Err(_) => (true, MAX_FAILED_UNLOCKS, true),
+        };
+
+        if locked
+            && !storage_failed
+            && failed_unlocks >= MAX_FAILED_UNLOCKS
+            && platform.reset_storage()
+        {
+            locked = false;
+            failed_unlocks = 0;
+        }
 
         Self {
             platform,
             pin_cache: [0; 32],
             locked,
-            failed_unlocks: 0,
+            failed_unlocks,
+            storage_failed,
             confirmation: ConfirmationService::new(),
         }
     }
 
-    fn handle(&mut self, source: AppMessageSource, request: proto::ReqData) -> Vec<WalletOutput> {
-        if self.confirmation.is_waiting() {
-            match request.payload {
-                Some(req_data::Payload::UserActionRequest(request)) => {
-                    return self.handle_user_action(source, request);
-                }
-                Some(req_data::Payload::ConfirmationControl(request))
-                    if source == AppMessageSource::Fido2 && !request.active =>
-                {
-                    return self.handle_confirmation_control(source, request);
-                }
-                Some(req_data::Payload::ConfirmationControl(_))
-                    if source == AppMessageSource::Fido2 =>
-                {
-                    return vec![Self::confirmation_result(AppMessageSource::Fido2, false)];
-                }
-                _ => {}
-            }
+    fn is_busy(&self) -> bool {
+        self.confirmation.is_waiting()
+    }
 
-            return self.error(source, proto::AppError::Busy);
+    fn state(&self) -> WalletState {
+        let Ok(seed_exists) = self.seed_exists() else {
+            return WalletState::Disabled;
+        };
+
+        if self.is_busy() {
+            WalletState::Busy
+        } else if !seed_exists {
+            WalletState::Setup
+        } else if self.locked {
+            WalletState::Locked
+        } else {
+            WalletState::Ready
         }
+    }
 
+    fn handle_protocol(
+        &mut self,
+        route: TransportRoute,
+        request: proto::ReqData,
+    ) -> Vec<CoreEffect> {
         let Some(payload) = request.payload else {
-            return self.reply(source, res_data::Payload::Unknown(proto::Unknown {}));
+            return self.transport_reply(route, res_data::Payload::Unknown(proto::Unknown {}));
         };
 
         match payload {
             req_data::Payload::Unknown(_) => {
-                self.reply(source, res_data::Payload::Unknown(proto::Unknown {}))
+                self.transport_reply(route, res_data::Payload::Unknown(proto::Unknown {}))
             }
             req_data::Payload::VersionRequest(_) => {
                 let features = proto::Features {
-                    initialized: self.platform.seed_exists(),
+                    initialized: self.seed_exists().unwrap_or(true),
                     support_mask: self.platform.support_mask(),
                 };
-                self.reply(
-                    source,
+                self.transport_reply(
+                    route,
                     res_data::Payload::VersionResponse(proto::VersionResponse {
                         version: self.platform.version(),
                         features: Some(features),
@@ -291,44 +415,136 @@ impl<P: WalletPlatform> WalletApp<P> {
                     }),
                 )
             }
-            req_data::Payload::StatusRequest(_) => self.reply(source, self.status_response()),
+            req_data::Payload::StatusRequest(_) => {
+                self.transport_reply(route, self.status_response())
+            }
             req_data::Payload::LockRequest(_) => {
                 self.locked = true;
                 self.pin_cache.zeroize();
-                self.reply(source, self.status_response())
+                vec![
+                    Self::transport(route, self.status_response()),
+                    CoreEffect::WalletState(self.state()),
+                ]
             }
-            req_data::Payload::UnlockRequest(request) => self.handle_unlock(source, request),
-            req_data::Payload::GenerateMnemonicRequest(request) => {
-                self.handle_generate_mnemonic(source, request)
+            req_data::Payload::UnlockRequest(request) => {
+                self.handle_external_unlock(route, request)
             }
-            req_data::Payload::InitRequest(request) => self.handle_init(source, request),
+            req_data::Payload::InitRequest(request) => self.handle_external_init(route, request),
             req_data::Payload::InitCustomRequest(request) => {
-                self.handle_init_custom(source, request)
+                self.handle_external_init_custom(route, request)
             }
             req_data::Payload::DerivePublicKeyRequest(request) => {
                 if self.locked {
-                    return self.error(source, proto::AppError::Locked);
+                    return self.transport_error_output(route, proto::AppError::Locked);
                 }
                 match self.derive_public_key(request) {
-                    Ok(payload) => self.reply(source, payload),
-                    Err(_) => self.error(source, proto::AppError::Failed),
+                    Ok(payload) => self.transport_reply(route, payload),
+                    Err(_) => self.transport_error_output(route, proto::AppError::Failed),
                 }
             }
-            req_data::Payload::SignEthRequest(request) => self.handle_sign_request(source, request),
-            req_data::Payload::UserActionRequest(_) => {
-                self.error(source, proto::AppError::NoPendingAction)
+            req_data::Payload::SignEthRequest(request) => self.handle_sign_request(route, request),
+        }
+    }
+
+    fn handle_local(&mut self, request: LocalRequest<'_>) -> Vec<CoreEffect> {
+        if self.is_busy() {
+            return vec![Self::local_error(proto::AppError::Busy, 0)];
+        }
+
+        match request {
+            LocalRequest::Unlock(pin) => self.handle_local_unlock(pin),
+            LocalRequest::InitCustom { words, pin } => self.handle_local_init_custom(words, pin),
+            LocalRequest::GenerateMnemonic { words, entropy } => {
+                self.handle_generate_mnemonic(words, entropy)
             }
-            req_data::Payload::DeviceRequest(request) => {
-                self.handle_device_request(source, request)
+            LocalRequest::Restart => {
+                self.platform.restart();
+                Vec::new()
             }
-            req_data::Payload::Fido2RegisterRequest(request) => {
-                self.handle_fido2_register(source, request)
-            }
-            req_data::Payload::Fido2SignRequest(request) => self.handle_fido2_sign(source, request),
-            req_data::Payload::ConfirmationControl(request) => {
-                self.handle_confirmation_control(source, request)
+            LocalRequest::ResetStorage => {
+                if self.platform.reset_storage() {
+                    self.storage_reset_succeeded();
+                    vec![CoreEffect::WalletState(WalletState::Setup)]
+                } else {
+                    vec![Self::local_error(proto::AppError::Failed, 0)]
+                }
             }
         }
+    }
+
+    fn handle_fido(&mut self, id: u32, request: FidoRequest<'_>) -> Vec<CoreEffect> {
+        if self.confirmation.is_waiting() {
+            if matches!(request, FidoRequest::CancelConfirmation) {
+                return self.cancel_fido_confirmation(id);
+            }
+            return vec![Self::fido(id, Self::fido_error())];
+        }
+
+        match request {
+            FidoRequest::Register {
+                rp_id,
+                cred_protect,
+            } => self.handle_fido_register(id, rp_id, cred_protect),
+            FidoRequest::Validate {
+                credential_id,
+                rp_id_hash,
+            } => self.handle_fido_credential(id, credential_id, rp_id_hash, None),
+            FidoRequest::Sign {
+                credential_id,
+                rp_id_hash,
+                hash,
+            } => self.handle_fido_credential(id, credential_id, rp_id_hash, Some(hash)),
+            FidoRequest::Confirm {
+                operation,
+                rp_id,
+                account,
+            } => self.start_fido_confirmation(id, operation, rp_id, account),
+            FidoRequest::CancelConfirmation => Vec::new(),
+        }
+    }
+
+    fn handle_confirmation(&mut self, id: u32, choice: ConfirmationChoice) -> Vec<CoreEffect> {
+        let Some(pending) = self.confirmation.finish(id) else {
+            return Vec::new();
+        };
+
+        let mut outputs = match pending.action {
+            PendingAction::Sign(pending) => match choice {
+                ConfirmationChoice::Approve => {
+                    let reply_to = pending.reply_to;
+                    match self.sign(pending) {
+                        Ok(payload) => vec![Self::transport(reply_to, payload)],
+                        Err(_) => vec![Self::transport_error(reply_to, proto::AppError::Failed)],
+                    }
+                }
+                ConfirmationChoice::Reject => vec![Self::transport_error(
+                    pending.reply_to,
+                    proto::AppError::Rejected,
+                )],
+            },
+            PendingAction::Fido(request_id) => vec![Self::fido(
+                request_id,
+                FidoOutput {
+                    status: if choice == ConfirmationChoice::Approve {
+                        FidoStatus::Success
+                    } else {
+                        FidoStatus::Failed
+                    },
+                    credential_id: Vec::new(),
+                    data: Vec::new(),
+                },
+            )],
+        };
+
+        outputs.push(CoreEffect::ConfirmationCompleted {
+            id,
+            outcome: match choice {
+                ConfirmationChoice::Approve => ConfirmationOutcome::Approved,
+                ConfirmationChoice::Reject => ConfirmationOutcome::Rejected,
+            },
+        });
+        outputs.push(CoreEffect::WalletState(self.state()));
+        outputs
     }
 
     fn status_response(&self) -> res_data::Payload {
@@ -338,126 +554,261 @@ impl<P: WalletPlatform> WalletApp<P> {
         res_data::Payload::StatusResponse(proto::StatusResponse { status_mask })
     }
 
-    fn handle_unlock(
+    fn handle_external_unlock(
         &mut self,
-        source: AppMessageSource,
-        request: proto::UnlockRequest,
-    ) -> Vec<WalletOutput> {
-        if self.external_display_operation(source) {
-            return self.error(source, proto::AppError::DisplayRequired);
+        route: TransportRoute,
+        mut request: proto::UnlockRequest,
+    ) -> Vec<CoreEffect> {
+        let effects = match self.seed_exists() {
+            Err(_) => self.transport_error_output(route, proto::AppError::Failed),
+            Ok(false) => self.transport_error_output(route, proto::AppError::InvalidAction),
+            Ok(true) if self.platform.local_ui_enabled() => {
+                self.transport_error_output(route, proto::AppError::DisplayRequired)
+            }
+            Ok(true) if request.hash.len() != 32 => {
+                self.transport_error_output(route, proto::AppError::InvalidAction)
+            }
+            Ok(true) if self.failed_unlocks >= MAX_FAILED_UNLOCKS => {
+                self.transport_error_output(route, proto::AppError::Failed)
+            }
+            Ok(true) => {
+                let result = self
+                    .set_pin_hash(&request.hash)
+                    .map_err(|_| SeedLoadError::Storage)
+                    .and_then(|_| self.load_seed_classified().map(|_| ()));
+
+                match self.complete_unlock(result) {
+                    Ok(()) => {
+                        vec![
+                            Self::transport(route, self.status_response()),
+                            CoreEffect::WalletState(WalletState::Ready),
+                        ]
+                    }
+                    Err(UnlockFailure::Reset) => vec![
+                        Self::transport_error(route, proto::AppError::Failed),
+                        CoreEffect::WalletState(WalletState::Setup),
+                    ],
+                    Err(_) => self.transport_error_output(route, proto::AppError::Failed),
+                }
+            }
+        };
+        request.hash.zeroize();
+        effects
+    }
+
+    fn handle_local_unlock(&mut self, pin: &str) -> Vec<CoreEffect> {
+        match self.seed_exists() {
+            Err(_) => return vec![Self::local_error(proto::AppError::Failed, 0)],
+            Ok(false) => return vec![Self::local_error(proto::AppError::InvalidAction, 0)],
+            Ok(true) => {}
+        }
+
+        if self.failed_unlocks >= MAX_FAILED_UNLOCKS {
+            return vec![Self::local_error(
+                proto::AppError::UnlockFailed,
+                MAX_FAILED_UNLOCKS.into(),
+            )];
         }
 
         let result = self
-            .set_request_pin(source, request.hash, request.pin_text)
-            .and_then(|_| self.load_seed().map(|_| ()));
+            .set_pin_text(pin)
+            .map_err(|_| SeedLoadError::Storage)
+            .and_then(|_| self.load_seed_classified().map(|_| ()));
 
-        match result {
+        match self.complete_unlock(result) {
             Ok(()) => {
-                self.locked = false;
-                self.failed_unlocks = 0;
-                if source == AppMessageSource::Display {
-                    vec![Self::display_output(proto::DisplayAction::Ready, "")]
-                } else {
-                    self.reply(source, self.status_response())
-                }
+                vec![
+                    Self::local(LocalAction::Ready, String::new()),
+                    CoreEffect::WalletState(WalletState::Ready),
+                ]
             }
-            Err(_) if source == AppMessageSource::Display => {
-                self.failed_unlocks = self.failed_unlocks.saturating_add(1);
-                if self.failed_unlocks >= 10 {
-                    self.platform.reset_storage();
-                }
-                vec![Self::display_error(
+            Err(UnlockFailure::Attempts(failures)) => {
+                vec![Self::local_error(
                     proto::AppError::UnlockFailed,
-                    self.failed_unlocks.into(),
+                    failures.into(),
                 )]
             }
-            Err(_) => self.error(source, proto::AppError::Failed),
-        }
-    }
-
-    fn handle_generate_mnemonic(
-        &self,
-        source: AppMessageSource,
-        request: proto::GenerateMnemonicRequest,
-    ) -> Vec<WalletOutput> {
-        if source != AppMessageSource::Display {
-            return self.error(source, proto::AppError::DisplayRequired);
-        }
-
-        let result: Result<String> = (|| {
-            let entropy = match request.entropy {
-                Some(entropy) => entropy,
-                None => self.platform.random(request.length as usize * 4 / 3),
-            };
-            let mnemonic = mnemonic::Mnemonic::from_entropy(&entropy)?;
-            Ok(mnemonic.words.join(" "))
-        })();
-
-        match result {
-            Ok(words) => vec![Self::display_output(proto::DisplayAction::Mnemonic, words)],
-            Err(_) => self.error(source, proto::AppError::Failed),
-        }
-    }
-
-    fn handle_init(
-        &mut self,
-        source: AppMessageSource,
-        request: proto::InitWalletRequest,
-    ) -> Vec<WalletOutput> {
-        if self.external_display_operation(source) {
-            return self.error(source, proto::AppError::DisplayRequired);
-        }
-
-        let result = (|| {
-            self.set_request_pin(source, request.pin, request.pin_text)?;
-            let entropy = self.platform.random(request.length as usize * 4 / 3);
-            let mnemonic = mnemonic::Mnemonic::from_entropy(&entropy)?;
-            let mut seed = mnemonic.to_seed(&request.password)?;
-            let result = self.save_seed(&seed);
-            seed.zeroize();
-            result?;
-            self.locked = false;
-            Ok(mnemonic.words.join(" "))
-        })();
-
-        self.init_result(source, result)
-    }
-
-    fn handle_init_custom(
-        &mut self,
-        source: AppMessageSource,
-        request: proto::InitWalletCustomRequest,
-    ) -> Vec<WalletOutput> {
-        if self.external_display_operation(source) {
-            return self.error(source, proto::AppError::DisplayRequired);
-        }
-
-        let result = (|| {
-            self.set_request_pin(source, request.pin, request.pin_text)?;
-            let mnemonic = mnemonic::Mnemonic::from_phrase(&request.words)?;
-            let mut seed = mnemonic.to_seed(&request.password)?;
-            let result = self.save_seed(&seed);
-            seed.zeroize();
-            result?;
-            self.locked = false;
-            Ok(mnemonic.words.join(" "))
-        })();
-
-        self.init_result(source, result)
-    }
-
-    fn init_result(&self, source: AppMessageSource, result: Result<String>) -> Vec<WalletOutput> {
-        match result {
-            Ok(_) if source == AppMessageSource::Display => {
-                vec![Self::display_output(proto::DisplayAction::Ready, "")]
+            Err(UnlockFailure::Reset) => vec![
+                Self::local_error(proto::AppError::UnlockFailed, MAX_FAILED_UNLOCKS.into()),
+                CoreEffect::WalletState(WalletState::Setup),
+            ],
+            Err(UnlockFailure::Storage) => {
+                vec![Self::local_error(proto::AppError::Failed, 0)]
             }
-            Ok(words) => self.reply(
-                source,
-                res_data::Payload::InitWalletResponse(proto::InitWalletResponse {
-                    mnemonic: Some(words),
-                }),
-            ),
-            Err(_) => self.error(source, proto::AppError::Failed),
+        }
+    }
+
+    fn complete_unlock(
+        &mut self,
+        result: core::result::Result<(), SeedLoadError>,
+    ) -> core::result::Result<(), UnlockFailure> {
+        if result.is_ok() {
+            if self.platform.write_unlock_failures(0) {
+                self.locked = false;
+                self.failed_unlocks = 0;
+                return Ok(());
+            }
+
+            self.locked = true;
+            self.pin_cache.zeroize();
+            return Err(UnlockFailure::Storage);
+        }
+
+        self.locked = true;
+        self.pin_cache.zeroize();
+        if matches!(result, Err(SeedLoadError::Storage)) {
+            return Err(UnlockFailure::Storage);
+        }
+        let failures = self.failed_unlocks.saturating_add(1);
+        if !self.platform.write_unlock_failures(failures) {
+            return Err(UnlockFailure::Storage);
+        }
+        self.failed_unlocks = failures;
+        if self.failed_unlocks >= MAX_FAILED_UNLOCKS {
+            if !self.platform.reset_storage() {
+                return Err(UnlockFailure::Storage);
+            }
+            self.storage_reset_succeeded();
+            return Err(UnlockFailure::Reset);
+        }
+        Err(UnlockFailure::Attempts(self.failed_unlocks))
+    }
+
+    fn storage_reset_succeeded(&mut self) {
+        self.pin_cache.zeroize();
+        self.storage_failed = false;
+        self.locked = false;
+        self.failed_unlocks = 0;
+    }
+
+    fn handle_generate_mnemonic(&self, words: u32, entropy: &[u8]) -> Vec<CoreEffect> {
+        let result: Result<String> = (|| {
+            let entropy_len = mnemonic_entropy_bytes(words)?;
+            let entropy = Zeroizing::new(if entropy.is_empty() {
+                self.platform.random(entropy_len)
+            } else {
+                if entropy.len() != entropy_len {
+                    return Err(anyhow!("Invalid entropy length"));
+                }
+                entropy.to_vec()
+            });
+            Ok(mnemonic::Mnemonic::from_entropy(&entropy)?.words.join(" "))
+        })();
+
+        match result {
+            Ok(words) => vec![Self::local(LocalAction::Mnemonic, words)],
+            Err(_) => vec![Self::local_error(proto::AppError::Failed, 0)],
+        }
+    }
+
+    fn handle_external_init(
+        &mut self,
+        route: TransportRoute,
+        mut request: proto::InitWalletRequest,
+    ) -> Vec<CoreEffect> {
+        let effects = match self.seed_exists() {
+            Err(_) => self.transport_error_output(route, proto::AppError::Failed),
+            Ok(true) => self.transport_error_output(route, proto::AppError::InvalidAction),
+            Ok(false) if self.platform.local_ui_enabled() => {
+                self.transport_error_output(route, proto::AppError::DisplayRequired)
+            }
+            Ok(false) => {
+                let result = (|| {
+                    let entropy_len = mnemonic_entropy_bytes(request.length)?;
+                    self.set_pin_hash(&request.pin)?;
+                    let entropy = Zeroizing::new(self.platform.random(entropy_len));
+                    let mnemonic = mnemonic::Mnemonic::from_entropy(&entropy)?;
+                    self.initialize_seed(&mnemonic, &request.password)?;
+                    Ok(mnemonic.words.join(" "))
+                })();
+                self.external_init_result(route, result)
+            }
+        };
+        request.password.zeroize();
+        request.pin.zeroize();
+        request.seed.zeroize();
+        effects
+    }
+
+    fn handle_external_init_custom(
+        &mut self,
+        route: TransportRoute,
+        mut request: proto::InitWalletCustomRequest,
+    ) -> Vec<CoreEffect> {
+        let effects = match self.seed_exists() {
+            Err(_) => self.transport_error_output(route, proto::AppError::Failed),
+            Ok(true) => self.transport_error_output(route, proto::AppError::InvalidAction),
+            Ok(false) if self.platform.local_ui_enabled() => {
+                self.transport_error_output(route, proto::AppError::DisplayRequired)
+            }
+            Ok(false) => {
+                let result = (|| {
+                    self.set_pin_hash(&request.pin)?;
+                    let mnemonic = mnemonic::Mnemonic::from_phrase(&request.words)?;
+                    self.initialize_seed(&mnemonic, &request.password)?;
+                    Ok(mnemonic.words.join(" "))
+                })();
+                self.external_init_result(route, result)
+            }
+        };
+        request.words.zeroize();
+        request.password.zeroize();
+        request.pin.zeroize();
+        effects
+    }
+
+    fn handle_local_init_custom(&mut self, words: &str, pin: &str) -> Vec<CoreEffect> {
+        match self.seed_exists() {
+            Err(_) => return vec![Self::local_error(proto::AppError::Failed, 0)],
+            Ok(true) => return vec![Self::local_error(proto::AppError::InvalidAction, 0)],
+            Ok(false) => {}
+        }
+
+        let result = (|| {
+            self.set_pin_text(pin)?;
+            let mnemonic = mnemonic::Mnemonic::from_phrase(words)?;
+            self.initialize_seed(&mnemonic, "")
+        })();
+
+        match result {
+            Ok(()) => vec![
+                Self::local(LocalAction::Ready, String::new()),
+                CoreEffect::WalletState(WalletState::Ready),
+            ],
+            Err(_) => vec![Self::local_error(proto::AppError::Failed, 0)],
+        }
+    }
+
+    fn initialize_seed(&mut self, mnemonic: &mnemonic::Mnemonic, password: &str) -> Result<()> {
+        let mut seed = mnemonic.to_seed(password)?;
+        if !self.platform.write_unlock_failures(0) {
+            seed.zeroize();
+            return Err(anyhow!("Failed to initialize unlock counter"));
+        }
+        let result = self.save_seed(&seed);
+        seed.zeroize();
+        result?;
+        self.locked = false;
+        self.failed_unlocks = 0;
+        Ok(())
+    }
+
+    fn external_init_result(
+        &self,
+        route: TransportRoute,
+        result: Result<String>,
+    ) -> Vec<CoreEffect> {
+        match result {
+            Ok(words) => vec![
+                Self::transport(
+                    route,
+                    res_data::Payload::InitWalletResponse(proto::InitWalletResponse {
+                        mnemonic: Some(words),
+                    }),
+                ),
+                CoreEffect::WalletState(WalletState::Ready),
+            ],
+            Err(_) => self.transport_error_output(route, proto::AppError::Failed),
         }
     }
 
@@ -482,219 +833,178 @@ impl<P: WalletPlatform> WalletApp<P> {
 
     fn handle_sign_request(
         &mut self,
-        source: AppMessageSource,
+        route: TransportRoute,
         request: proto::SignEthRequest,
-    ) -> Vec<WalletOutput> {
+    ) -> Vec<CoreEffect> {
         if self.locked {
-            return self.error(source, proto::AppError::Locked);
-        }
-
-        if !matches!(source, AppMessageSource::Uart | AppMessageSource::Bluetooth) {
-            return self.error(source, proto::AppError::ExternalRequestRequired);
+            return self.transport_error_output(route, proto::AppError::Locked);
         }
 
         // TODO: Support requests larger than 8 KiB with chunked transport and streaming hashing.
-        let (pending, confirmation) = match Self::prepare_sign(source, request) {
+        let (pending, details) = match self.prepare_sign(route, request) {
             Ok(prepared) => prepared,
-            Err(_) => return self.error(source, proto::AppError::Failed),
+            Err(_) => return self.transport_error_output(route, proto::AppError::Failed),
+        };
+        let Some(id) = self
+            .confirmation
+            .start(PendingAction::Sign(pending), details)
+        else {
+            return self.transport_error_output(route, proto::AppError::Busy);
         };
 
-        self.confirmation.start(PendingAction::Sign(pending));
-
         vec![
-            Self::output(
-                source,
+            Self::transport(
+                route,
                 res_data::Payload::WaitForUserActionResponse(proto::WaitForUserActionResponse {}),
             ),
-            Self::confirmation_prompt(confirmation),
+            CoreEffect::ConfirmationRequired(id),
+            CoreEffect::WalletState(WalletState::Busy),
         ]
     }
 
-    fn handle_user_action(
+    fn start_fido_confirmation(
         &mut self,
-        source: AppMessageSource,
-        request: proto::UserActionRequest,
-    ) -> Vec<WalletOutput> {
-        if source != AppMessageSource::Confirmation {
-            return self.error(source, proto::AppError::TrustedActionRequired);
-        }
-
-        let Some(pending) = self.confirmation.finish() else {
-            return self.error(source, proto::AppError::NoPendingAction);
+        request_id: u32,
+        operation: FidoOperation,
+        rp_id: &[u8],
+        account: &[u8],
+    ) -> Vec<CoreEffect> {
+        let details = match oskey_chain::fido::confirmation(operation, rp_id, account) {
+            Ok(details) => ConfirmationDetails::Fido(details),
+            Err(_) => return vec![Self::fido(request_id, Self::fido_error())],
+        };
+        let Some(id) = self
+            .confirmation
+            .start(PendingAction::Fido(request_id), details)
+        else {
+            return vec![Self::fido(request_id, Self::fido_error())];
         };
 
-        let action =
-            proto::UserAction::try_from(request.action).unwrap_or(proto::UserAction::Unspecified);
+        vec![
+            CoreEffect::ConfirmationRequired(id),
+            CoreEffect::WalletState(WalletState::Busy),
+        ]
+    }
 
-        let mut outputs = match pending {
-            PendingAction::Sign(pending) => match action {
-                proto::UserAction::Approve => {
-                    let reply_to = pending.reply_to;
-                    match self.sign(pending) {
-                        Ok(payload) => vec![Self::output(reply_to, payload)],
-                        Err(_) => {
-                            vec![Self::error_output(reply_to, proto::AppError::Failed)]
-                        }
-                    }
-                }
-                proto::UserAction::Reject => {
-                    vec![Self::error_output(
-                        pending.reply_to,
-                        proto::AppError::Rejected,
-                    )]
-                }
-                proto::UserAction::Unspecified => {
-                    vec![Self::error_output(
-                        pending.reply_to,
-                        proto::AppError::InvalidAction,
-                    )]
-                }
+    fn cancel_fido_confirmation(&mut self, request_id: u32) -> Vec<CoreEffect> {
+        let Some(pending) = self.confirmation.cancel_if(
+            |pending| matches!(pending.action, PendingAction::Fido(id) if id == request_id),
+        ) else {
+            return Vec::new();
+        };
+        let PendingAction::Fido(request_id) = pending.action else {
+            unreachable!();
+        };
+
+        vec![
+            Self::fido(request_id, Self::fido_cancelled()),
+            CoreEffect::ConfirmationCompleted {
+                id: pending.id,
+                outcome: ConfirmationOutcome::Cancelled,
             },
-            PendingAction::Fido2 => {
-                vec![Self::confirmation_result(
-                    AppMessageSource::Fido2,
-                    action == proto::UserAction::Approve,
-                )]
-            }
-        };
-
-        outputs.push(Self::confirmation_finished());
-        outputs
+            CoreEffect::WalletState(self.state()),
+        ]
     }
 
-    fn handle_confirmation_control(
-        &mut self,
-        source: AppMessageSource,
-        request: proto::ConfirmationControl,
-    ) -> Vec<WalletOutput> {
-        if source != AppMessageSource::Fido2 {
-            return self.error(source, proto::AppError::TrustedActionRequired);
-        }
-
-        if request.active {
-            let Some(fido) = request.fido else {
-                return self.error(source, proto::AppError::InvalidAction);
-            };
-            self.confirmation.start(PendingAction::Fido2);
-            vec![Self::confirmation_prompt(
-                proto::confirmation_prompt::Content::Fido(fido),
-            )]
-        } else if matches!(self.confirmation.pending(), Some(PendingAction::Fido2)) {
-            self.confirmation.finish();
-            vec![Self::confirmation_finished()]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn handle_device_request(
-        &self,
-        source: AppMessageSource,
-        request: proto::DeviceRequest,
-    ) -> Vec<WalletOutput> {
-        if source != AppMessageSource::Display {
-            return self.error(source, proto::AppError::DisplayRequired);
-        }
-
-        match proto::DeviceAction::try_from(request.action)
-            .unwrap_or(proto::DeviceAction::Unspecified)
-        {
-            proto::DeviceAction::Restart => self.platform.restart(),
-            proto::DeviceAction::ResetStorage => self.platform.reset_storage(),
-            proto::DeviceAction::Unspecified => {
-                return self.error(source, proto::AppError::InvalidAction);
-            }
-        }
-        Vec::new()
-    }
-
-    fn handle_fido2_register(
-        &self,
-        source: AppMessageSource,
-        request: proto::Fido2RegisterRequest,
-    ) -> Vec<WalletOutput> {
-        if source != AppMessageSource::Fido2 {
-            return self.error(source, proto::AppError::TrustedActionRequired);
-        }
+    fn handle_fido_register(&self, id: u32, rp_id: &str, cred_protect: u8) -> Vec<CoreEffect> {
         if self.locked {
-            return self.error(source, proto::AppError::Locked);
+            return vec![Self::fido(id, Self::fido_error())];
         }
 
-        let result: Result<res_data::Payload> = (|| {
+        let result: Result<FidoOutput> = (|| {
             let nonce = self.platform.random(oskey_chain::fido::NONCE_SIZE);
             let credential = oskey_chain::fido::create(
                 &self.load_seed()?,
-                &request.rp_id,
+                rp_id,
                 nonce.as_slice().try_into()?,
+                cred_protect,
             )?;
-            Ok(res_data::Payload::Fido2Response(proto::Fido2Response {
+            Ok(FidoOutput {
+                status: FidoStatus::Success,
                 credential_id: credential.id.to_vec(),
                 data: credential.public_key.to_vec(),
-            }))
+            })
         })();
 
-        match result {
-            Ok(payload) => self.reply(source, payload),
-            Err(_) => self.error(source, proto::AppError::Failed),
-        }
+        vec![Self::fido(
+            id,
+            result.unwrap_or_else(|_| Self::fido_error()),
+        )]
     }
 
-    fn handle_fido2_sign(
+    fn handle_fido_credential(
         &self,
-        source: AppMessageSource,
-        request: proto::Fido2SignRequest,
-    ) -> Vec<WalletOutput> {
-        if source != AppMessageSource::Fido2 {
-            return self.error(source, proto::AppError::TrustedActionRequired);
-        }
+        id: u32,
+        credential_id: &[u8],
+        rp_id_hash: &[u8],
+        hash: Option<&[u8]>,
+    ) -> Vec<CoreEffect> {
         if self.locked {
-            return self.error(source, proto::AppError::Locked);
+            return vec![Self::fido(id, Self::fido_error())];
         }
 
         let result: Result<Vec<u8>> = self.load_seed().and_then(|seed| {
-            if request.hash.is_empty() {
-                oskey_chain::fido::validate(&seed, &request.credential_id, &request.rp_id_hash)
-                    .map(|_| Vec::new())
+            if let Some(hash) = hash {
+                oskey_chain::fido::sign(&seed, credential_id, rp_id_hash, hash)
+                    .map(|signature| signature.to_vec())
             } else {
-                oskey_chain::fido::sign(
-                    &seed,
-                    &request.credential_id,
-                    &request.rp_id_hash,
-                    &request.hash,
-                )
-                .map(|signature| signature.to_vec())
+                oskey_chain::fido::validate(&seed, credential_id, rp_id_hash)
+                    .map(|cred_protect| vec![cred_protect])
             }
         });
 
-        match result {
-            Ok(signature) => self.reply(
-                source,
-                res_data::Payload::Fido2Response(proto::Fido2Response {
+        vec![Self::fido(
+            id,
+            match result {
+                Ok(data) => FidoOutput {
+                    status: FidoStatus::Success,
                     credential_id: Vec::new(),
-                    data: signature,
-                }),
-            ),
-            Err(_) => self.error(source, proto::AppError::Failed),
-        }
+                    data,
+                },
+                Err(_) => Self::fido_error(),
+            },
+        )]
     }
 
     fn prepare_sign(
-        source: AppMessageSource,
+        &self,
+        route: TransportRoute,
         request: proto::SignEthRequest,
-    ) -> Result<(PendingSign, proto::confirmation_prompt::Content)> {
+    ) -> Result<(PendingSign, ConfirmationDetails)> {
         let proto::SignEthRequest { id, path, tx, .. } = request;
-        let path = path.parse()?;
+        let path: DerivationPath = path.parse()?;
         let tx = tx.ok_or_else(|| anyhow!("Transaction data is missing"))?;
+        let public_key = wallets::ExtendedPrivKey::derive(
+            &self.load_seed()?,
+            path.clone(),
+            wallets::Curve::K256,
+        )?
+        .export_pk()?
+        .to_vec();
+        let from = oskey_chain::eth::OSKeyTxEip191::address(&public_key)?;
 
-        let (hash, confirmation) = match tx {
+        let (hash, details) = match tx {
             proto::sign_eth_request::Tx::Eip2930(transaction) => {
-                let transaction = OSKeyTxEip2930::from_proto(transaction)?;
+                if transaction
+                    .access_list
+                    .as_ref()
+                    .is_some_and(|access_list| !access_list.is_empty())
+                {
+                    return Err(anyhow!("EIP-2930 access lists are unsupported"));
+                }
+                let transaction = OSKeyTxEip2930::new(Eip2930Transaction {
+                    chain_id: transaction.chain_id,
+                    nonce: transaction.nonce,
+                    gas_price: transaction.gas_price,
+                    gas_limit: transaction.gas_limit,
+                    to: transaction.to,
+                    value: transaction.value,
+                    input: transaction.input.unwrap_or_default(),
+                })?;
                 let hash = transaction.hash();
-                let confirmation = transaction.confirmation(&hash);
-                (
-                    hash,
-                    proto::confirmation_prompt::Content::EthTransaction(confirmation),
-                )
+                let details =
+                    ConfirmationDetails::EthTransaction(transaction.confirmation(&hash, from));
+                (hash, details)
             }
             proto::sign_eth_request::Tx::Eip191(message) => {
                 if message.is_personal == Some(false) {
@@ -702,12 +1012,10 @@ impl<P: WalletPlatform> WalletApp<P> {
                 }
                 let hash =
                     oskey_chain::eth::OSKeyTxEip191::hash_message(message.message.as_bytes());
-                let confirmation =
-                    oskey_chain::eth::OSKeyTxEip191::confirmation(&message.message, &hash);
-                (
-                    hash,
-                    proto::confirmation_prompt::Content::EthMessage(confirmation),
-                )
+                let details = ConfirmationDetails::EthMessage(
+                    oskey_chain::eth::OSKeyTxEip191::confirmation(&message.message, &hash, from)?,
+                );
+                (hash, details)
             }
         };
 
@@ -716,9 +1024,10 @@ impl<P: WalletPlatform> WalletApp<P> {
                 id,
                 path,
                 hash,
-                reply_to: source,
+                public_key,
+                reply_to: route,
             },
-            confirmation,
+            details,
         ))
     }
 
@@ -728,43 +1037,26 @@ impl<P: WalletPlatform> WalletApp<P> {
             pending.path,
             wallets::Curve::K256,
         )?;
-        let public_key = private_key.export_pk()?.to_vec();
         let signature = private_key.sign(&pending.hash)?;
 
         Ok(res_data::Payload::SignResponse(proto::SignResponse {
             id: pending.id,
             message: Vec::new(),
-            public_key,
+            public_key: pending.public_key,
             pre_hash: pending.hash.to_vec(),
             signature: signature.to_vec(),
             recovery_id: None,
         }))
     }
 
-    fn set_request_pin(
-        &mut self,
-        source: AppMessageSource,
-        hash: Vec<u8>,
-        pin_text: Option<String>,
-    ) -> Result<()> {
-        match source {
-            AppMessageSource::Uart | AppMessageSource::Bluetooth => {
-                if pin_text.is_some() {
-                    return Err(anyhow!("Plaintext PIN is not allowed"));
-                }
-                self.set_pin_hash(&hash)
-            }
-            AppMessageSource::Display => {
-                let pin = pin_text.ok_or_else(|| anyhow!("PIN is required"))?;
-                let mut input = pin.into_bytes();
-                input.extend_from_slice(PIN_SALT);
-                let hash = crypto::Hash::sha256(&input);
-                input.zeroize();
-                let hash = hash?;
-                self.set_pin_hash(&hash)
-            }
-            _ => Err(anyhow!("PIN request source is not allowed")),
-        }
+    fn set_pin_text(&mut self, pin: &str) -> Result<()> {
+        let mut input = Vec::with_capacity(pin.len() + PIN_SALT.len());
+        input.extend_from_slice(pin.as_bytes());
+        input.extend_from_slice(PIN_SALT);
+        let hash = crypto::Hash::sha256(&input);
+        input.zeroize();
+        let hash = Zeroizing::new(hash?);
+        self.set_pin_hash(&hash[..])
     }
 
     fn set_pin_hash(&mut self, hash: &[u8]) -> Result<()> {
@@ -794,52 +1086,68 @@ impl<P: WalletPlatform> WalletApp<P> {
         self.platform.write_seed(&stored)
     }
 
-    fn load_seed(&self) -> Result<Zeroizing<Vec<u8>>> {
+    fn load_seed_classified(&self) -> core::result::Result<Zeroizing<Vec<u8>>, SeedLoadError> {
         let mut stored = vec![0; 128];
-        let len = self.platform.read_seed(&mut stored)?;
-        if !(12..=stored.len()).contains(&len) {
-            return Err(anyhow!("Stored seed is invalid"));
+        let len = self
+            .platform
+            .read_seed(&mut stored)
+            .map_err(|_| SeedLoadError::Storage)?;
+        if len != STORED_SEED_BYTES {
+            return Err(SeedLoadError::Storage);
         }
         stored.truncate(len);
 
         let mut nonce = [0; 12];
         nonce.copy_from_slice(&stored[..12]);
         let mut seed =
-            crypto::ChaCha20Poly1305Cipher::decrypt(&self.pin_cache, &nonce, &stored[12..])?;
+            crypto::ChaCha20Poly1305Cipher::decrypt(&self.pin_cache, &nonce, &stored[12..])
+                .map_err(|_| SeedLoadError::Credentials)?;
         let result = Zeroizing::new(seed.as_slice().to_vec());
         seed.as_mut_slice().zeroize();
         Ok(result)
     }
 
-    fn external_display_operation(&self, source: AppMessageSource) -> bool {
-        matches!(source, AppMessageSource::Uart | AppMessageSource::Bluetooth)
-            && self.platform.support_mask().get(5).copied() == Some(1)
+    fn load_seed(&self) -> Result<Zeroizing<Vec<u8>>> {
+        self.load_seed_classified()
+            .map_err(|_| anyhow!("Failed to load seed"))
     }
 
-    fn reply(&self, source: AppMessageSource, payload: res_data::Payload) -> Vec<WalletOutput> {
-        vec![Self::output(source, payload)]
-    }
-
-    fn error(&self, source: AppMessageSource, error: proto::AppError) -> Vec<WalletOutput> {
-        if source == AppMessageSource::Display {
-            return vec![Self::display_error(error, 0)];
+    fn seed_exists(&self) -> Result<bool> {
+        if self.storage_failed {
+            Err(anyhow!("Storage unavailable"))
+        } else {
+            self.platform.seed_exists()
         }
-
-        vec![Self::error_output(source, error)]
     }
 
-    fn output(target: AppMessageSource, payload: res_data::Payload) -> WalletOutput {
-        WalletOutput {
-            target,
-            response: proto::ResData {
+    fn transport_reply(
+        &self,
+        route: TransportRoute,
+        payload: res_data::Payload,
+    ) -> Vec<CoreEffect> {
+        vec![Self::transport(route, payload)]
+    }
+
+    fn transport_error_output(
+        &self,
+        route: TransportRoute,
+        error: proto::AppError,
+    ) -> Vec<CoreEffect> {
+        vec![Self::transport_error(route, error)]
+    }
+
+    fn transport(route: TransportRoute, payload: res_data::Payload) -> CoreEffect {
+        CoreEffect::Transport(
+            route,
+            proto::ResData {
                 payload: Some(payload),
             },
-        }
+        )
     }
 
-    fn error_output(target: AppMessageSource, error: proto::AppError) -> WalletOutput {
-        Self::output(
-            target,
+    fn transport_error(route: TransportRoute, error: proto::AppError) -> CoreEffect {
+        Self::transport(
+            route,
             res_data::Payload::ErrorResponse(proto::ErrorResponse {
                 code: error as i32,
                 message: String::new(),
@@ -847,55 +1155,42 @@ impl<P: WalletPlatform> WalletApp<P> {
         )
     }
 
-    fn display_output(action: proto::DisplayAction, text: impl Into<String>) -> WalletOutput {
-        Self::output(
-            AppMessageSource::Display,
-            res_data::Payload::DisplayResponse(proto::DisplayResponse {
-                action: action as i32,
-                text: text.into(),
-                error: proto::AppError::Unspecified as i32,
-                value: 0,
-            }),
-        )
+    fn local(action: LocalAction, text: String) -> CoreEffect {
+        CoreEffect::Local(LocalResult {
+            action,
+            error: proto::AppError::Unspecified,
+            value: 0,
+            text,
+        })
     }
 
-    fn display_error(error: proto::AppError, value: u32) -> WalletOutput {
-        Self::output(
-            AppMessageSource::Display,
-            res_data::Payload::DisplayResponse(proto::DisplayResponse {
-                action: proto::DisplayAction::Error as i32,
-                text: String::new(),
-                error: error as i32,
-                value,
-            }),
-        )
+    fn local_error(error: proto::AppError, value: u32) -> CoreEffect {
+        CoreEffect::Local(LocalResult {
+            action: LocalAction::Error,
+            error,
+            value,
+            text: String::new(),
+        })
     }
 
-    fn confirmation_prompt(content: proto::confirmation_prompt::Content) -> WalletOutput {
-        Self::output(
-            AppMessageSource::Confirmation,
-            res_data::Payload::ConfirmationPrompt(proto::ConfirmationPrompt {
-                active: true,
-                content: Some(content),
-            }),
-        )
+    fn fido_error() -> FidoOutput {
+        FidoOutput {
+            status: FidoStatus::Failed,
+            credential_id: Vec::new(),
+            data: Vec::new(),
+        }
     }
 
-    fn confirmation_finished() -> WalletOutput {
-        Self::output(
-            AppMessageSource::Confirmation,
-            res_data::Payload::ConfirmationPrompt(proto::ConfirmationPrompt {
-                active: false,
-                content: None,
-            }),
-        )
+    fn fido_cancelled() -> FidoOutput {
+        FidoOutput {
+            status: FidoStatus::Cancelled,
+            credential_id: Vec::new(),
+            data: Vec::new(),
+        }
     }
 
-    fn confirmation_result(target: AppMessageSource, approved: bool) -> WalletOutput {
-        Self::output(
-            target,
-            res_data::Payload::ConfirmationResult(proto::ConfirmationResult { approved }),
-        )
+    fn fido(id: u32, result: FidoOutput) -> CoreEffect {
+        CoreEffect::Fido { id, result }
     }
 }
 
@@ -906,19 +1201,36 @@ mod tests {
     use super::*;
     use alloc::rc::Rc;
     use core::cell::RefCell;
+
     #[derive(Clone)]
     struct TestPlatform {
         seed: Rc<RefCell<Vec<u8>>>,
-        display: bool,
-        device_action: Rc<RefCell<Option<proto::DeviceAction>>>,
+        unlock_failures: Rc<RefCell<u8>>,
+        random_lengths: Rc<RefCell<Vec<usize>>>,
+        reset_calls: Rc<RefCell<usize>>,
+        local_ui: bool,
+        reset_succeeds: bool,
+        seed_check_fails: bool,
+        seed_read_fails: bool,
+        unlock_failures_exists: bool,
+        unlock_failures_read_fails: bool,
+        random_succeeds: bool,
     }
 
     impl TestPlatform {
-        fn new(display: bool) -> Self {
+        fn new(local_ui: bool) -> Self {
             Self {
                 seed: Rc::new(RefCell::new(Vec::new())),
-                display,
-                device_action: Rc::new(RefCell::new(None)),
+                unlock_failures: Rc::new(RefCell::new(0)),
+                random_lengths: Rc::new(RefCell::new(Vec::new())),
+                reset_calls: Rc::new(RefCell::new(0)),
+                local_ui,
+                reset_succeeds: true,
+                seed_check_fails: false,
+                seed_read_fails: false,
+                unlock_failures_exists: true,
+                unlock_failures_read_fails: false,
+                random_succeeds: true,
             }
         }
     }
@@ -934,23 +1246,39 @@ mod tests {
 
         fn support_mask(&self) -> Vec<u8> {
             let mut features = vec![0; 16];
-            features[5] = self.display as u8;
+            features[5] = self.local_ui as u8;
             features
         }
 
-        fn storage_ready(&self) -> bool {
-            true
+        fn local_ui_enabled(&self) -> bool {
+            self.local_ui
         }
 
-        fn seed_exists(&self) -> bool {
-            !self.seed.borrow().is_empty()
+        fn storage_ready(&self) -> bool {
+            !self.seed_check_fails && !self.seed_read_fails && !self.unlock_failures_read_fails
+        }
+
+        fn seed_exists(&self) -> Result<bool> {
+            if self.seed_check_fails {
+                Err(anyhow!("Seed check failed"))
+            } else {
+                Ok(!self.seed.borrow().is_empty())
+            }
         }
 
         fn random(&self, len: usize) -> Vec<u8> {
-            vec![0; len]
+            self.random_lengths.borrow_mut().push(len);
+            if self.random_succeeds {
+                vec![7; len]
+            } else {
+                Vec::new()
+            }
         }
 
         fn read_seed(&self, data: &mut [u8]) -> Result<usize> {
+            if self.seed_read_fails {
+                return Err(anyhow!("Seed read failed"));
+            }
             let seed = self.seed.borrow();
             if seed.is_empty() {
                 return Err(anyhow!("Seed not found"));
@@ -964,55 +1292,88 @@ mod tests {
             Ok(())
         }
 
-        fn reset_storage(&self) {
-            self.seed.borrow_mut().clear();
-            *self.device_action.borrow_mut() = Some(proto::DeviceAction::ResetStorage);
+        fn unlock_failures(&self) -> Result<u8> {
+            if self.unlock_failures_read_fails {
+                Err(anyhow!("Unlock counter read failed"))
+            } else if !self.unlock_failures_exists {
+                Ok(0)
+            } else {
+                Ok(*self.unlock_failures.borrow())
+            }
         }
 
-        fn restart(&self) {
-            *self.device_action.borrow_mut() = Some(proto::DeviceAction::Restart);
+        fn write_unlock_failures(&self, failures: u8) -> bool {
+            *self.unlock_failures.borrow_mut() = failures;
+            true
         }
+
+        fn reset_storage(&self) -> bool {
+            *self.reset_calls.borrow_mut() += 1;
+            if !self.reset_succeeds {
+                return false;
+            }
+            self.seed.borrow_mut().clear();
+            *self.unlock_failures.borrow_mut() = 0;
+            true
+        }
+
+        fn restart(&self) {}
     }
 
-    fn request(
-        app: &mut WalletApp<TestPlatform>,
-        payload: req_data::Payload,
-        source: AppMessageSource,
-    ) -> Vec<WalletOutput> {
-        app.handle(
-            source,
-            proto::ReqData {
+    fn frame(payload: req_data::Payload) -> Vec<u8> {
+        FrameParser::pack(
+            &proto::ReqData {
                 payload: Some(payload),
-            },
+            }
+            .encode_to_vec(),
         )
     }
 
-    fn external(
-        app: &mut WalletApp<TestPlatform>,
-        payload: req_data::Payload,
-    ) -> Vec<WalletOutput> {
-        request(app, payload, AppMessageSource::Uart)
+    fn init(runtime: &mut WalletRuntime<TestPlatform>) {
+        let outputs = runtime.handle(CoreRequest::Local(LocalRequest::InitCustom {
+            words: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            pin: "Password1!",
+        }));
+        assert!(outputs
+            .iter()
+            .any(|output| matches!(output, CoreEffect::WalletState(WalletState::Ready))));
     }
 
-    fn pin() -> Vec<u8> {
-        vec![0; 32]
-    }
-
-    fn init_request() -> req_data::Payload {
-        req_data::Payload::InitRequest(proto::InitWalletRequest {
-            length: 12,
-            password: String::new(),
-            seed: None,
-            pin: pin(),
-            pin_text: None,
+    fn protocol(
+        runtime: &mut WalletRuntime<TestPlatform>,
+        transport: Transport,
+        data: &[u8],
+    ) -> Vec<CoreEffect> {
+        runtime.handle(CoreRequest::Protocol {
+            route: TransportRoute {
+                transport,
+                session_id: if transport == Transport::Bluetooth {
+                    7
+                } else {
+                    0
+                },
+            },
+            data,
         })
     }
 
-    fn sign_request() -> req_data::Payload {
-        sign_request_with_message("hello".into())
+    fn fido(
+        runtime: &mut WalletRuntime<TestPlatform>,
+        id: u32,
+        request: FidoRequest<'_>,
+    ) -> Vec<CoreEffect> {
+        runtime.handle(CoreRequest::Fido { id, request })
     }
 
-    fn sign_request_with_message(message: String) -> req_data::Payload {
+    fn confirm(
+        runtime: &mut WalletRuntime<TestPlatform>,
+        id: u32,
+        choice: ConfirmationChoice,
+    ) -> Vec<CoreEffect> {
+        runtime.handle(CoreRequest::Confirm { id, choice })
+    }
+
+    fn sign_request(message: String) -> req_data::Payload {
         req_data::Payload::SignEthRequest(proto::SignEthRequest {
             id: 1,
             path: "m/44'/60'/0'/0/0".into(),
@@ -1026,656 +1387,1114 @@ mod tests {
 
     #[test]
     fn version_replies_to_origin() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        let output = external(
-            &mut app,
-            req_data::Payload::VersionRequest(proto::VersionRequest {}),
-        );
-
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0].target, AppMessageSource::Uart);
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        let request = frame(req_data::Payload::VersionRequest(proto::VersionRequest {}));
+        let outputs = protocol(&mut runtime, Transport::Bluetooth, &request);
         assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::VersionResponse(_))
+            outputs.as_slice(),
+            [CoreEffect::Transport(
+                TransportRoute {
+                    transport: Transport::Bluetooth,
+                    session_id: 7
+                },
+                _
+            )]
         ));
     }
 
     #[test]
-    fn external_plaintext_pin_is_rejected() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        let payload = req_data::Payload::InitRequest(proto::InitWalletRequest {
-            length: 12,
-            password: String::new(),
-            seed: None,
-            pin: Vec::new(),
-            pin_text: Some("Password1!".into()),
-        });
+    fn seed_check_failure_is_fail_closed() {
+        let mut platform = TestPlatform::new(false);
+        platform.seed_check_fails = true;
+        let mut runtime = WalletRuntime::new(platform);
 
-        let output = external(&mut app, payload);
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
-        ));
-    }
+        assert_eq!(runtime.state(), WalletState::Disabled);
 
-    #[test]
-    fn display_can_initialize_with_plaintext_pin() {
-        let mut app = WalletApp::new(TestPlatform::new(true));
-        let payload = req_data::Payload::InitCustomRequest(proto::InitWalletCustomRequest {
-            words: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into(),
-            password: String::new(),
-            pin: Vec::new(),
-            pin_text: Some("Password1!".into()),
-        });
-
-        let output = request(&mut app, payload, AppMessageSource::Display);
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::DisplayResponse(_))
-        ));
-    }
-
-    #[test]
-    fn sign_waits_for_a_trusted_user_action() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-
-        let output = external(&mut app, sign_request());
-        assert_eq!(output.len(), 2);
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::WaitForUserActionResponse(_))
-        ));
-        assert_eq!(output[1].target, AppMessageSource::Confirmation);
-        assert!(matches!(
-            output[1].response.payload,
-            Some(res_data::Payload::ConfirmationPrompt(
-                proto::ConfirmationPrompt {
-                    active: true,
-                    content: Some(proto::confirmation_prompt::Content::EthMessage(_)),
-                }
-            ))
-        ));
-
-        let untrusted = external(
-            &mut app,
-            req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                action: proto::UserAction::Approve as i32,
-            }),
+        let version = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(req_data::Payload::VersionRequest(proto::VersionRequest {})),
         );
-        assert!(matches!(
-            untrusted[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
-        ));
-
-        let approved = request(
-            &mut app,
-            req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                action: proto::UserAction::Approve as i32,
-            }),
-            AppMessageSource::Confirmation,
-        );
-        let Some(res_data::Payload::SignResponse(response)) = &approved[0].response.payload else {
-            panic!("expected sign response");
+        let [CoreEffect::Transport(
+            _,
+            proto::ResData {
+                payload: Some(res_data::Payload::VersionResponse(response)),
+            },
+        )] = version.as_slice()
+        else {
+            panic!("expected version response");
         };
         assert_eq!(
-            response.pre_hash,
-            oskey_chain::eth::OSKeyTxEip191::hash_message(b"hello")
+            response
+                .features
+                .as_ref()
+                .map(|features| features.initialized),
+            Some(true)
         );
-    }
-
-    #[test]
-    fn large_message_is_released_before_confirmation() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-
-        let message = "a".repeat(8192);
-        let expected_hash = oskey_chain::eth::OSKeyTxEip191::hash_message(message.as_bytes());
-        let output = external(&mut app, sign_request_with_message(message));
-
-        let Some(res_data::Payload::ConfirmationPrompt(prompt)) = &output[1].response.payload
-        else {
-            panic!("expected confirmation prompt");
-        };
-        let Some(proto::confirmation_prompt::Content::EthMessage(confirmation)) = &prompt.content
-        else {
-            panic!("expected message confirmation");
-        };
-        assert!(confirmation.truncated);
-        assert!(confirmation.preview.len() <= 256);
-        assert_eq!(confirmation.byte_length, 8192);
-        assert_eq!(confirmation.signing_hash, expected_hash);
-
-        let Some(PendingAction::Sign(pending)) = app.confirmation.pending() else {
-            panic!("expected pending signature");
-        };
-        assert_eq!(pending.hash, expected_hash);
-
-        let approved = request(
-            &mut app,
-            req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                action: proto::UserAction::Approve as i32,
-            }),
-            AppMessageSource::Confirmation,
-        );
-        let Some(res_data::Payload::SignResponse(response)) = &approved[0].response.payload else {
-            panic!("expected sign response");
-        };
-        assert_eq!(response.pre_hash, expected_hash);
-    }
-
-    #[test]
-    fn unsupported_message_mode_is_rejected_before_confirmation() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-        let payload = req_data::Payload::SignEthRequest(proto::SignEthRequest {
-            id: 1,
-            path: "m/44'/60'/0'/0/0".into(),
-            tx: Some(proto::sign_eth_request::Tx::Eip191(proto::AppEthTxEip191 {
-                message: "hello".into(),
-                is_personal: Some(false),
-            })),
-            debug_text: None,
-        });
-
-        let output = external(&mut app, payload);
 
         assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
-        ));
-        assert!(!app.confirmation.is_waiting());
-    }
-
-    #[test]
-    fn pending_sign_rejects_another_request_as_busy() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-        external(&mut app, sign_request());
-
-        let output = external(
-            &mut app,
-            req_data::Payload::StatusRequest(proto::StatusRequest {}),
-        );
-        let Some(res_data::Payload::ErrorResponse(error)) = &output[0].response.payload else {
-            panic!("expected busy error");
-        };
-        assert_eq!(error.code, proto::AppError::Busy as i32);
-        assert!(error.message.is_empty());
-    }
-
-    #[test]
-    fn fido2_uses_the_confirmation_service() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-
-        let prompt = request(
-            &mut app,
-            req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
-                active: true,
-                fido: Some(proto::FidoConfirmation {
-                    operation: proto::FidoOperation::Authenticate as i32,
-                    rp_id: "ssh:".into(),
-                    account: b"OSKey".to_vec(),
-                    account_is_text: true,
-                }),
-            }),
-            AppMessageSource::Fido2,
-        );
-        assert!(matches!(
-            prompt[0].response.payload,
-            Some(res_data::Payload::ConfirmationPrompt(
-                proto::ConfirmationPrompt {
-                    active: true,
-                    content: Some(proto::confirmation_prompt::Content::Fido(
-                        proto::FidoConfirmation {
-                            operation,
-                            ref rp_id,
-                            ref account,
-                            account_is_text: true,
-                        }
-                    )),
-                }
-            )) if operation == proto::FidoOperation::Authenticate as i32
-                && rp_id == "ssh:" && account == b"OSKey"
-        ));
-
-        let busy = external(&mut app, sign_request());
-        assert!(matches!(
-            busy[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(proto::ErrorResponse {
-                code,
+            runtime
+                .handle(CoreRequest::Local(LocalRequest::InitCustom {
+                    words: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                    pin: "Password1!",
+                }))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                error: proto::AppError::Failed,
                 ..
-            })) if code == proto::AppError::Busy as i32
+            })]
         ));
-
-        let approved = request(
-            &mut app,
-            req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                action: proto::UserAction::Approve as i32,
-            }),
-            AppMessageSource::Confirmation,
-        );
         assert!(matches!(
-            approved[0].response.payload,
-            Some(res_data::Payload::ConfirmationResult(
-                proto::ConfirmationResult { approved: true }
-            ))
-        ));
-    }
-
-    #[test]
-    fn fido2_confirmation_rejects_invalid_rp_id() {
-        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        let output = runtime.message(
-            AppMessageSource::Fido2,
-            AppMessageAction::Confirmation,
-            proto::FidoOperation::Register as u32,
-            b"site.\xff",
-            &[],
-        );
-
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ConfirmationResult(
-                proto::ConfirmationResult { approved: false }
-            ))
-        ));
-    }
-
-    #[test]
-    fn fido2_local_message_keeps_confirmation_fields() {
-        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        let output = runtime.message(
-            AppMessageSource::Fido2,
-            AppMessageAction::Confirmation,
-            proto::FidoOperation::Register as u32,
-            b"example.com",
-            &[0, 1],
-        );
-
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ConfirmationPrompt(
-                proto::ConfirmationPrompt {
-                    active: true,
-                    content: Some(proto::confirmation_prompt::Content::Fido(
-                        proto::FidoConfirmation {
-                            operation,
-                            ref rp_id,
-                            ref account,
-                            account_is_text: false,
-                        }
-                    )),
+            protocol(
+                &mut runtime,
+                Transport::Uart,
+                &frame(req_data::Payload::InitRequest(proto::InitWalletRequest {
+                    length: 12,
+                    password: String::new(),
+                    seed: None,
+                    pin: vec![0; 32],
+                })),
+            )
+            .as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(error))
                 }
-            )) if operation == proto::FidoOperation::Register as i32
-                && rp_id == "example.com" && account == &[0, 1]
+            )] if error.code == proto::AppError::Failed as i32
         ));
     }
 
     #[test]
-    fn fido2_cancellation_releases_the_confirmation_service() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
+    fn unlock_counter_failure_is_fail_closed() {
+        let mut platform = TestPlatform::new(false);
+        platform.seed.borrow_mut().push(1);
+        platform.unlock_failures_read_fails = true;
+        let mut runtime = WalletRuntime::new(platform);
 
-        request(
-            &mut app,
-            req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
-                active: true,
-                fido: Some(proto::FidoConfirmation {
-                    operation: proto::FidoOperation::Select as i32,
-                    rp_id: String::new(),
-                    account: Vec::new(),
-                    account_is_text: false,
-                }),
-            }),
-            AppMessageSource::Fido2,
-        );
-        let output = request(
-            &mut app,
-            req_data::Payload::ConfirmationControl(proto::ConfirmationControl {
-                active: false,
-                fido: None,
-            }),
-            AppMessageSource::Fido2,
-        );
-
+        assert_eq!(runtime.state(), WalletState::Disabled);
         assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ConfirmationPrompt(
-                proto::ConfirmationPrompt { active: false, .. }
-            ))
+            runtime
+                .handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                error: proto::AppError::Failed,
+                ..
+            })]
         ));
-        assert!(!app.confirmation.is_waiting());
+        assert!(matches!(
+            protocol(
+                &mut runtime,
+                Transport::Uart,
+                &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                    hash: vec![0; 32],
+                })),
+            )
+            .as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(error))
+                }
+            )] if error.code == proto::AppError::Failed as i32
+        ));
     }
 
     #[test]
-    fn malformed_fido2_message_returns_an_error() {
+    fn missing_unlock_counter_uses_zero_for_existing_seed() {
+        let mut platform = TestPlatform::new(false);
+        platform.seed.borrow_mut().push(1);
+        platform.unlock_failures_exists = false;
+        let runtime = WalletRuntime::new(platform);
+
+        assert_eq!(runtime.state(), WalletState::Locked);
+        assert_eq!(runtime.app.failed_unlocks, 0);
+    }
+
+    #[test]
+    fn protocol_parser_keeps_fragment_state() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        let output = runtime.message(
-            AppMessageSource::Fido2,
-            AppMessageAction::Fido2Register,
-            0,
-            &[0xff],
-            &[],
-        );
+        let request = frame(req_data::Payload::VersionRequest(proto::VersionRequest {}));
+        let (first, second) = request.split_at(3);
 
+        assert!(protocol(&mut runtime, Transport::Uart, first).is_empty());
         assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
+            protocol(&mut runtime, Transport::Bluetooth, &request).as_slice(),
+            [CoreEffect::Transport(
+                TransportRoute {
+                    transport: Transport::Bluetooth,
+                    session_id: 7
+                },
+                _
+            )]
+        ));
+        assert!(matches!(
+            protocol(&mut runtime, Transport::Uart, second).as_slice(),
+            [CoreEffect::Transport(
+                TransportRoute {
+                    transport: Transport::Uart,
+                    session_id: 0
+                },
+                _
+            )]
         ));
     }
 
     #[test]
-    fn display_error_uses_a_typed_error_and_value() {
-        let platform = TestPlatform::new(false);
-        let mut first_boot = WalletApp::new(platform.clone());
-        external(&mut first_boot, init_request());
-
-        let mut second_boot = WalletApp::new(platform);
-        let output = request(
-            &mut second_boot,
-            req_data::Payload::UnlockRequest(proto::UnlockRequest {
-                hash: Vec::new(),
-                pin_text: Some("wrong".into()),
-            }),
-            AppMessageSource::Display,
-        );
-
-        let Some(res_data::Payload::DisplayResponse(error)) = &output[0].response.payload else {
-            panic!("expected display error");
-        };
-        assert_eq!(error.action, proto::DisplayAction::Error as i32);
-        assert_eq!(error.error, proto::AppError::UnlockFailed as i32);
-        assert_eq!(error.value, 1);
-        assert!(error.text.is_empty());
-    }
-
-    #[test]
-    fn confirmation_returns_to_original_transport() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-        external(&mut app, sign_request());
-
-        let output = request(
-            &mut app,
-            req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                action: proto::UserAction::Approve as i32,
-            }),
-            AppMessageSource::Confirmation,
-        );
-
-        assert_eq!(output[0].target, AppMessageSource::Uart);
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::SignResponse(_))
-        ));
-        assert_eq!(output[1].target, AppMessageSource::Confirmation);
-    }
-
-    #[test]
-    fn display_initialization_is_required_on_display_devices() {
-        let mut app = WalletApp::new(TestPlatform::new(true));
-        let output = external(&mut app, init_request());
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
-        ));
-    }
-
-    #[test]
-    fn display_unlock_cannot_be_bypassed_by_a_transport() {
-        let platform = TestPlatform::new(true);
-        let mut first_boot = WalletApp::new(platform.clone());
-        request(
-            &mut first_boot,
-            req_data::Payload::InitCustomRequest(proto::InitWalletCustomRequest {
-                words: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into(),
-                password: String::new(),
-                pin: Vec::new(),
-                pin_text: Some("Password1!".into()),
-            }),
-            AppMessageSource::Display,
-        );
-
-        let mut second_boot = WalletApp::new(platform);
-        let output = external(
-            &mut second_boot,
-            req_data::Payload::UnlockRequest(proto::UnlockRequest {
-                hash: pin(),
-                pin_text: None,
-            }),
-        );
-
-        assert!(matches!(
-            output[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
-        ));
-        assert!(second_boot.locked);
-    }
-
-    #[test]
-    fn bluetooth_sign_response_returns_to_bluetooth() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-        request(&mut app, sign_request(), AppMessageSource::Bluetooth);
-
-        let output = request(
-            &mut app,
-            req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                action: proto::UserAction::Approve as i32,
-            }),
-            AppMessageSource::Confirmation,
-        );
-        assert_eq!(output[0].target, AppMessageSource::Bluetooth);
-    }
-
-    #[test]
-    fn rejection_clears_pending_sign() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-        external(&mut app, sign_request());
-
-        let rejected = request(
-            &mut app,
-            req_data::Payload::UserActionRequest(proto::UserActionRequest {
-                action: proto::UserAction::Reject as i32,
-            }),
-            AppMessageSource::Confirmation,
-        );
-        let Some(res_data::Payload::ErrorResponse(error)) = &rejected[0].response.payload else {
-            panic!("expected rejection");
-        };
-        assert_eq!(error.code, proto::AppError::Rejected as i32);
-
-        let status = external(
-            &mut app,
-            req_data::Payload::StatusRequest(proto::StatusRequest {}),
-        );
-        assert!(matches!(
-            status[0].response.payload,
-            Some(res_data::Payload::StatusResponse(_))
-        ));
-    }
-
-    #[test]
-    fn stored_wallet_starts_locked_and_can_be_unlocked() {
-        let platform = TestPlatform::new(false);
-        let mut first_boot = WalletApp::new(platform.clone());
-        external(&mut first_boot, init_request());
-
-        let mut second_boot = WalletApp::new(platform);
-        let locked = external(
-            &mut second_boot,
-            req_data::Payload::DerivePublicKeyRequest(proto::DerivePublicKeyRequest {
-                path: "m/44'/60'/0'/0/0".into(),
-            }),
-        );
-        assert!(matches!(
-            locked[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
-        ));
-
-        let unlocked = external(
-            &mut second_boot,
-            req_data::Payload::UnlockRequest(proto::UnlockRequest {
-                hash: pin(),
-                pin_text: None,
-            }),
-        );
-        let Some(res_data::Payload::StatusResponse(status)) = &unlocked[0].response.payload else {
-            panic!("expected status");
-        };
-        assert_eq!(status.status_mask[1], 0);
-    }
-
-    #[test]
-    fn lock_clears_the_pin_cache() {
-        let mut app = WalletApp::new(TestPlatform::new(false));
-        external(&mut app, init_request());
-        assert_ne!(app.pin_cache, [0; 32]);
-
-        let output = external(
-            &mut app,
-            req_data::Payload::LockRequest(proto::LockRequest {}),
-        );
-        let Some(res_data::Payload::StatusResponse(status)) = &output[0].response.payload else {
-            panic!("expected status");
-        };
-        assert_eq!(status.status_mask[1], 1);
-        assert_eq!(app.pin_cache, [0; 32]);
-        assert!(app.load_seed().is_err());
-
-        external(
-            &mut app,
-            req_data::Payload::UnlockRequest(proto::UnlockRequest {
-                hash: pin(),
-                pin_text: None,
-            }),
-        );
-        assert!(app.load_seed().is_ok());
-    }
-
-    #[test]
-    fn mnemonic_generation_is_a_display_message() {
-        let mut runtime = WalletRuntime::new(TestPlatform::new(true));
-        let output = runtime.message(
-            AppMessageSource::Display,
-            AppMessageAction::GenerateMnemonic,
-            12,
-            &[0; 16],
-            &[],
-        );
-
-        let Some(res_data::Payload::DisplayResponse(response)) = &output[0].response.payload else {
-            panic!("expected display response");
-        };
-        assert_eq!(response.action, proto::DisplayAction::Mnemonic as i32);
-        assert!(response.text.ends_with("about"));
-    }
-
-    #[test]
-    fn device_actions_require_the_display() {
-        let platform = TestPlatform::new(true);
-        let mut app = WalletApp::new(platform.clone());
-        let device_request = || {
-            req_data::Payload::DeviceRequest(proto::DeviceRequest {
-                action: proto::DeviceAction::Restart as i32,
-            })
-        };
-
-        let rejected = external(&mut app, device_request());
-        assert!(matches!(
-            rejected[0].response.payload,
-            Some(res_data::Payload::ErrorResponse(_))
-        ));
-        assert_eq!(*platform.device_action.borrow(), None);
-
-        let output = request(&mut app, device_request(), AppMessageSource::Display);
-        assert!(output.is_empty());
-        assert_eq!(
-            *platform.device_action.borrow(),
-            Some(proto::DeviceAction::Restart)
-        );
-    }
-
-    #[test]
-    fn transport_parsers_keep_partial_frames_separate() {
+    fn bluetooth_parser_does_not_cross_sessions() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        let uart_frame = FrameParser::pack(
-            &proto::ReqData {
-                payload: Some(req_data::Payload::VersionRequest(proto::VersionRequest {})),
-            }
-            .encode_to_vec(),
-        );
-        let bluetooth_frame = FrameParser::pack(
-            &proto::ReqData {
-                payload: Some(req_data::Payload::StatusRequest(proto::StatusRequest {})),
-            }
-            .encode_to_vec(),
-        );
+        let request = frame(req_data::Payload::VersionRequest(proto::VersionRequest {}));
+        let (first, second) = request.split_at(3);
 
         assert!(runtime
-            .external(AppMessageSource::Uart, &uart_frame[..2])
+            .handle(CoreRequest::Protocol {
+                route: TransportRoute {
+                    transport: Transport::Bluetooth,
+                    session_id: 7,
+                },
+                data: first,
+            })
             .is_empty());
-
-        let bluetooth = runtime.external(AppMessageSource::Bluetooth, &bluetooth_frame);
-        assert_eq!(bluetooth[0].target, AppMessageSource::Bluetooth);
+        assert!(runtime
+            .handle(CoreRequest::Protocol {
+                route: TransportRoute {
+                    transport: Transport::Bluetooth,
+                    session_id: 8,
+                },
+                data: second,
+            })
+            .is_empty());
         assert!(matches!(
-            bluetooth[0].response.payload,
-            Some(res_data::Payload::StatusResponse(_))
-        ));
-
-        let uart = runtime.external(AppMessageSource::Uart, &uart_frame[2..]);
-        assert_eq!(uart[0].target, AppMessageSource::Uart);
-        assert!(matches!(
-            uart[0].response.payload,
-            Some(res_data::Payload::VersionResponse(_))
+            runtime
+                .handle(CoreRequest::Protocol {
+                    route: TransportRoute {
+                        transport: Transport::Bluetooth,
+                        session_id: 8,
+                    },
+                    data: &request,
+                })
+                .as_slice(),
+            [CoreEffect::Transport(
+                TransportRoute {
+                    transport: Transport::Bluetooth,
+                    session_id: 8
+                },
+                _
+            )]
         ));
     }
 
     #[test]
-    fn fido2_credential_survives_wallet_restore() {
+    fn local_initialization_uses_native_request() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(true));
+        init(&mut runtime);
+        assert_eq!(runtime.state(), WalletState::Ready);
+    }
+
+    #[test]
+    fn mnemonic_word_counts_use_bip39_entropy_sizes() {
+        let platform = TestPlatform::new(true);
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        for words in [12, 15, 18, 21, 24] {
+            assert!(matches!(
+                runtime
+                    .handle(CoreRequest::Local(LocalRequest::GenerateMnemonic {
+                        words,
+                        entropy: &[],
+                    }))
+                    .as_slice(),
+                [CoreEffect::Local(LocalResult {
+                    action: LocalAction::Mnemonic,
+                    ..
+                })]
+            ));
+        }
+
+        assert_eq!(*platform.random_lengths.borrow(), [16, 20, 24, 28, 32]);
+    }
+
+    #[test]
+    fn invalid_mnemonic_lengths_do_not_request_randomness() {
         let platform = TestPlatform::new(false);
-        let mut first_boot = WalletApp::new(platform.clone());
-        external(&mut first_boot, init_request());
+        let mut runtime = WalletRuntime::new(platform.clone());
 
-        let registered = request(
-            &mut first_boot,
-            req_data::Payload::Fido2RegisterRequest(proto::Fido2RegisterRequest {
-                rp_id: "ssh:".into(),
-            }),
-            AppMessageSource::Fido2,
+        for length in [0, 11, 13, 16, 22, 25, u32::MAX] {
+            let outputs = protocol(
+                &mut runtime,
+                Transport::Uart,
+                &frame(req_data::Payload::InitRequest(proto::InitWalletRequest {
+                    length,
+                    password: String::new(),
+                    seed: None,
+                    pin: vec![0; 32],
+                })),
+            );
+            assert!(matches!(
+                outputs.as_slice(),
+                [CoreEffect::Transport(
+                    _,
+                    proto::ResData {
+                        payload: Some(res_data::Payload::ErrorResponse(_))
+                    }
+                )]
+            ));
+        }
+
+        assert!(matches!(
+            runtime
+                .handle(CoreRequest::Local(LocalRequest::GenerateMnemonic {
+                    words: u32::MAX,
+                    entropy: &[],
+                }))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                action: LocalAction::Error,
+                ..
+            })]
+        ));
+        assert!(platform.random_lengths.borrow().is_empty());
+    }
+
+    #[test]
+    fn unavailable_randomness_rejects_mnemonic_generation() {
+        let mut platform = TestPlatform::new(false);
+        platform.random_succeeds = false;
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        assert!(matches!(
+            runtime
+                .handle(CoreRequest::Local(LocalRequest::GenerateMnemonic {
+                    words: 12,
+                    entropy: &[],
+                }))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                action: LocalAction::Error,
+                ..
+            })]
+        ));
+
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(req_data::Payload::InitRequest(proto::InitWalletRequest {
+                length: 12,
+                password: String::new(),
+                seed: None,
+                pin: vec![0; 32],
+            })),
         );
-        let Some(res_data::Payload::Fido2Response(credential)) = &registered[0].response.payload
+        assert!(matches!(
+            outputs.as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(error))
+                }
+            )] if error.code == proto::AppError::Failed as i32
+        ));
+        assert!(platform.seed.borrow().is_empty());
+        assert_eq!(*platform.random_lengths.borrow(), [16, 16]);
+    }
+
+    #[test]
+    fn initialization_cannot_replace_existing_seed() {
+        let platform = TestPlatform::new(false);
+        let mut runtime = WalletRuntime::new(platform.clone());
+        init(&mut runtime);
+        let original_seed = platform.seed.borrow().clone();
+        let original_random_lengths = platform.random_lengths.borrow().clone();
+
+        assert!(matches!(
+            runtime
+                .handle(CoreRequest::Local(LocalRequest::InitCustom {
+                    words: "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                    pin: "Different1!",
+                }))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                error: proto::AppError::InvalidAction,
+                ..
+            })]
+        ));
+
+        for payload in [
+            req_data::Payload::InitRequest(proto::InitWalletRequest {
+                length: 12,
+                password: String::new(),
+                seed: None,
+                pin: vec![0; 32],
+            }),
+            req_data::Payload::InitCustomRequest(proto::InitWalletCustomRequest {
+                words:
+                    "legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .into(),
+                password: String::new(),
+                pin: vec![0; 32],
+            }),
+        ] {
+            assert!(matches!(
+                protocol(&mut runtime, Transport::Uart, &frame(payload)).as_slice(),
+                [CoreEffect::Transport(
+                    _,
+                    proto::ResData {
+                        payload: Some(res_data::Payload::ErrorResponse(error))
+                    }
+                )] if error.code == proto::AppError::InvalidAction as i32
+            ));
+        }
+
+        assert_eq!(*platform.seed.borrow(), original_seed);
+        assert_eq!(*platform.random_lengths.borrow(), original_random_lengths);
+    }
+
+    #[test]
+    fn unlock_before_initialization_does_not_change_storage() {
+        let platform = TestPlatform::new(false);
+        *platform.unlock_failures.borrow_mut() = 4;
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        for _ in 0..=MAX_FAILED_UNLOCKS {
+            assert!(matches!(
+                runtime
+                    .handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")))
+                    .as_slice(),
+                [CoreEffect::Local(LocalResult {
+                    error: proto::AppError::InvalidAction,
+                    ..
+                })]
+            ));
+        }
+
+        assert!(matches!(
+            protocol(
+                &mut runtime,
+                Transport::Uart,
+                &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                    hash: vec![0; 32],
+                })),
+            )
+            .as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(error))
+                }
+            )] if error.code == proto::AppError::InvalidAction as i32
+        ));
+        assert!(platform.seed.borrow().is_empty());
+        assert_eq!(*platform.unlock_failures.borrow(), 4);
+        assert_eq!(*platform.reset_calls.borrow(), 0);
+    }
+
+    #[test]
+    fn seed_read_failure_does_not_consume_unlock_attempt() {
+        let mut platform = TestPlatform::new(false);
+        init(&mut WalletRuntime::new(platform.clone()));
+        platform.seed_read_fails = true;
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        for _ in 0..=MAX_FAILED_UNLOCKS {
+            assert!(matches!(
+                runtime
+                    .handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")))
+                    .as_slice(),
+                [CoreEffect::Local(LocalResult {
+                    error: proto::AppError::Failed,
+                    ..
+                })]
+            ));
+        }
+        assert_eq!(platform.unlock_failures().unwrap(), 0);
+        assert_eq!(*platform.reset_calls.borrow(), 0);
+    }
+
+    #[test]
+    fn invalid_seed_length_does_not_consume_unlock_attempt() {
+        let platform = TestPlatform::new(false);
+        init(&mut WalletRuntime::new(platform.clone()));
+        platform.seed.borrow_mut().pop();
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        for _ in 0..=MAX_FAILED_UNLOCKS {
+            runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        }
+        assert_eq!(platform.unlock_failures().unwrap(), 0);
+        assert_eq!(*platform.reset_calls.borrow(), 0);
+    }
+
+    #[test]
+    fn invalid_external_pin_hash_is_rejected() {
+        let platform = TestPlatform::new(false);
+        init(&mut WalletRuntime::new(platform.clone()));
+        let mut runtime = WalletRuntime::new(platform.clone());
+        let output = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                hash: Vec::new(),
+            })),
+        );
+        assert!(matches!(
+            &output[0],
+            CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(error))
+                }
+            ) if error.code == proto::AppError::InvalidAction as i32
+        ));
+        assert_eq!(platform.unlock_failures().unwrap(), 0);
+        assert!(!platform.seed.borrow().is_empty());
+    }
+
+    #[test]
+    fn external_unlock_emits_one_reply_and_one_state_change() {
+        let platform = TestPlatform::new(false);
+        init(&mut WalletRuntime::new(platform.clone()));
+        let mut runtime = WalletRuntime::new(platform);
+        let mut input = b"Password1!".to_vec();
+        input.extend_from_slice(PIN_SALT);
+        let hash = crypto::Hash::sha256(&input).unwrap();
+
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                hash: hash.to_vec(),
+            })),
+        );
+        assert!(matches!(
+            outputs.as_slice(),
+            [
+                CoreEffect::Transport(_, _),
+                CoreEffect::WalletState(WalletState::Ready)
+            ]
+        ));
+    }
+
+    #[test]
+    fn unlock_failures_survive_restart_and_clear_after_success() {
+        let platform = TestPlatform::new(true);
+        init(&mut WalletRuntime::new(platform.clone()));
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        for expected in 1..=3 {
+            assert!(matches!(
+                runtime
+                    .handle(CoreRequest::Local(LocalRequest::Unlock("wrong")))
+                    .as_slice(),
+                [CoreEffect::Local(LocalResult {
+                    error: proto::AppError::UnlockFailed,
+                    value,
+                    ..
+                })] if *value == expected
+            ));
+        }
+
+        let mut restarted = WalletRuntime::new(platform.clone());
+        assert_eq!(restarted.app.failed_unlocks, 3);
+        assert!(matches!(
+            restarted
+                .handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")))
+                .as_slice(),
+            [
+                CoreEffect::Local(LocalResult {
+                    action: LocalAction::Ready,
+                    ..
+                }),
+                CoreEffect::WalletState(WalletState::Ready)
+            ]
+        ));
+        assert_eq!(platform.unlock_failures().unwrap(), 0);
+    }
+
+    #[test]
+    fn failed_erase_keeps_wallet_locked_after_attempt_limit() {
+        let mut platform = TestPlatform::new(true);
+        init(&mut WalletRuntime::new(platform.clone()));
+        platform.reset_succeeds = false;
+        let persisted = platform.clone();
+        let mut runtime = WalletRuntime::new(platform);
+
+        for _ in 0..MAX_FAILED_UNLOCKS {
+            runtime.handle(CoreRequest::Local(LocalRequest::Unlock("wrong")));
+        }
+
+        let mut restarted = WalletRuntime::new(persisted);
+        assert!(matches!(
+            restarted
+                .handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                error: proto::AppError::UnlockFailed,
+                value,
+                ..
+            })] if *value == u32::from(MAX_FAILED_UNLOCKS)
+        ));
+        assert_eq!(restarted.state(), WalletState::Locked);
+    }
+
+    #[test]
+    fn pending_erase_is_retried_after_restart() {
+        let mut platform = TestPlatform::new(true);
+        init(&mut WalletRuntime::new(platform.clone()));
+        platform.reset_succeeds = false;
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        for _ in 0..MAX_FAILED_UNLOCKS {
+            runtime.handle(CoreRequest::Local(LocalRequest::Unlock("wrong")));
+        }
+
+        platform.reset_succeeds = true;
+        let restarted = WalletRuntime::new(platform.clone());
+        assert_eq!(restarted.state(), WalletState::Setup);
+        assert!(platform.seed.borrow().is_empty());
+        assert_eq!(platform.unlock_failures().unwrap(), 0);
+    }
+
+    #[test]
+    fn automatic_erase_publishes_setup_for_local_and_external_unlock() {
+        let local_platform = TestPlatform::new(false);
+        init(&mut WalletRuntime::new(local_platform.clone()));
+        let mut local = WalletRuntime::new(local_platform.clone());
+
+        for _ in 1..MAX_FAILED_UNLOCKS {
+            local.handle(CoreRequest::Local(LocalRequest::Unlock("wrong")));
+        }
+        assert!(matches!(
+            local
+                .handle(CoreRequest::Local(LocalRequest::Unlock("wrong")))
+                .as_slice(),
+            [
+                CoreEffect::Local(LocalResult {
+                    error: proto::AppError::UnlockFailed,
+                    value,
+                    ..
+                }),
+                CoreEffect::WalletState(WalletState::Setup)
+            ] if *value == u32::from(MAX_FAILED_UNLOCKS)
+        ));
+        assert_eq!(local.state(), WalletState::Setup);
+        assert!(!local.app.storage_failed);
+        assert!(!local.app.locked);
+        assert_eq!(local.app.failed_unlocks, 0);
+        assert!(local_platform.seed.borrow().is_empty());
+
+        let external_platform = TestPlatform::new(false);
+        init(&mut WalletRuntime::new(external_platform.clone()));
+        let mut external = WalletRuntime::new(external_platform.clone());
+        let wrong_pin = frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+            hash: vec![1; 32],
+        }));
+
+        for _ in 1..MAX_FAILED_UNLOCKS {
+            protocol(&mut external, Transport::Uart, &wrong_pin);
+        }
+        assert!(matches!(
+            protocol(&mut external, Transport::Uart, &wrong_pin).as_slice(),
+            [
+                CoreEffect::Transport(
+                    _,
+                    proto::ResData {
+                        payload: Some(res_data::Payload::ErrorResponse(error))
+                    }
+                ),
+                CoreEffect::WalletState(WalletState::Setup)
+            ] if error.code == proto::AppError::Failed as i32
+        ));
+        assert_eq!(external.state(), WalletState::Setup);
+        assert!(!external.app.storage_failed);
+        assert!(!external.app.locked);
+        assert_eq!(external.app.failed_unlocks, 0);
+        assert!(external_platform.seed.borrow().is_empty());
+    }
+
+    #[test]
+    fn lock_and_reset_publish_the_resulting_state() {
+        let mut setup = WalletRuntime::new(TestPlatform::new(false));
+        assert!(matches!(
+            protocol(
+                &mut setup,
+                Transport::Uart,
+                &frame(req_data::Payload::LockRequest(proto::LockRequest {})),
+            )
+            .as_slice(),
+            [
+                CoreEffect::Transport(_, _),
+                CoreEffect::WalletState(WalletState::Setup)
+            ]
+        ));
+
+        let mut ready = WalletRuntime::new(TestPlatform::new(true));
+        init(&mut ready);
+        assert_ne!(ready.app.pin_cache, [0; 32]);
+        ready.app.storage_failed = true;
+        ready.app.locked = true;
+        ready.app.failed_unlocks = 3;
+        assert!(matches!(
+            ready
+                .handle(CoreRequest::Local(LocalRequest::ResetStorage))
+                .as_slice(),
+            [CoreEffect::WalletState(WalletState::Setup)]
+        ));
+        assert_eq!(ready.app.pin_cache, [0; 32]);
+        assert!(!ready.app.storage_failed);
+        assert!(!ready.app.locked);
+        assert_eq!(ready.app.failed_unlocks, 0);
+
+        let mut platform = TestPlatform::new(false);
+        platform.reset_succeeds = false;
+        let mut failed = WalletRuntime::new(platform);
+        assert!(matches!(
+            failed
+                .handle(CoreRequest::Local(LocalRequest::ResetStorage))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                action: LocalAction::Error,
+                error: proto::AppError::Failed,
+                ..
+            })]
+        ));
+    }
+
+    #[test]
+    fn signing_uses_id_only_event_and_native_details() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Bluetooth,
+            &frame(sign_request("hello".into())),
+        );
+        assert!(matches!(
+            outputs.as_slice(),
+            [
+                CoreEffect::Transport(
+                    TransportRoute {
+                        transport: Transport::Bluetooth,
+                        session_id: 7
+                    },
+                    _
+                ),
+                CoreEffect::ConfirmationRequired(_),
+                CoreEffect::WalletState(WalletState::Busy)
+            ]
+        ));
+        let id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let Some(ConfirmationDetails::EthMessage(details)) = runtime.confirmation(id) else {
+            panic!("expected Ethereum message confirmation");
+        };
+        let confirmation_from = details.from;
+        let confirmation_hash = details.signing_hash;
+
+        let completed = confirm(&mut runtime, id, ConfirmationChoice::Approve);
+        assert!(matches!(
+            completed.as_slice(),
+            [
+                CoreEffect::Transport(
+                    TransportRoute {
+                        transport: Transport::Bluetooth,
+                        session_id: 7
+                    },
+                    _
+                ),
+                CoreEffect::ConfirmationCompleted {
+                    id: completed_id,
+                    outcome: ConfirmationOutcome::Approved
+                },
+                CoreEffect::WalletState(WalletState::Ready)
+            ] if *completed_id == id
+        ));
+        let CoreEffect::Transport(
+            _,
+            proto::ResData {
+                payload: Some(res_data::Payload::SignResponse(response)),
+            },
+        ) = &completed[0]
         else {
-            panic!("expected FIDO2 credential");
+            panic!("expected Ethereum signature response");
         };
-        assert_eq!(credential.credential_id.len(), 64);
-        assert_eq!(credential.data.len(), 65);
+        assert_eq!(
+            oskey_chain::eth::OSKeyTxEip191::address(&response.public_key).unwrap(),
+            confirmation_from
+        );
+        assert_eq!(response.pre_hash, confirmation_hash);
+        assert_eq!(response.signature.len(), 64);
+        assert!(runtime.confirmation(id).is_none());
+    }
 
-        let mut restored = WalletApp::new(platform);
-        external(
-            &mut restored,
-            req_data::Payload::UnlockRequest(proto::UnlockRequest {
-                hash: pin(),
-                pin_text: None,
-            }),
-        );
-        let signed = request(
-            &mut restored,
-            req_data::Payload::Fido2SignRequest(proto::Fido2SignRequest {
-                credential_id: credential.credential_id.clone(),
-                rp_id_hash: crypto::Hash::sha256(b"ssh:").unwrap().to_vec(),
-                hash: vec![1; 32],
-            }),
-            AppMessageSource::Fido2,
-        );
-        let Some(res_data::Payload::Fido2Response(response)) = &signed[0].response.payload else {
-            panic!("expected FIDO2 signature");
+    #[test]
+    fn unsupported_access_list_is_rejected_at_protocol_boundary() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let request = proto::SignEthRequest {
+            id: 1,
+            path: "m/44'/60'/0'/0/0".into(),
+            tx: Some(proto::sign_eth_request::Tx::Eip2930(
+                proto::AppEthTxEip2930 {
+                    chain_id: 1,
+                    nonce: 0,
+                    gas_price: "1".into(),
+                    gas_limit: 21000,
+                    to: None,
+                    value: "0".into(),
+                    input: None,
+                    access_list: Some(vec![0xc0]),
+                },
+            )),
+            debug_text: None,
         };
-        use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
-        let public_key = VerifyingKey::from_sec1_bytes(&credential.data).unwrap();
-        let signature = Signature::from_der(&response.data).unwrap();
-        public_key.verify_prehash(&[1; 32], &signature).unwrap();
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(req_data::Payload::SignEthRequest(request)),
+        );
+
+        assert!(matches!(
+            outputs.as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(_))
+                }
+            )]
+        ));
+    }
+
+    #[test]
+    fn stale_and_duplicate_confirmation_decisions_are_ignored() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(sign_request("hello".into())),
+        );
+        let id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(confirm(&mut runtime, id + 1, ConfirmationChoice::Approve).is_empty());
+        assert!(!confirm(&mut runtime, id, ConfirmationChoice::Reject).is_empty());
+        assert!(confirm(&mut runtime, id, ConfirmationChoice::Approve).is_empty());
+    }
+
+    #[test]
+    fn pending_confirmation_rejects_other_requests_as_busy() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let pending = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(sign_request("hello".into())),
+        );
+        let confirmation_id = pending
+            .iter()
+            .find_map(|effect| match effect {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+
+        let status = frame(req_data::Payload::StatusRequest(proto::StatusRequest {}));
+        let outputs = protocol(&mut runtime, Transport::Uart, &status);
+        let [CoreEffect::Transport(
+            _,
+            proto::ResData {
+                payload: Some(res_data::Payload::ErrorResponse(error)),
+            },
+        )] = outputs.as_slice()
+        else {
+            panic!("expected busy response");
+        };
+        assert_eq!(error.code, proto::AppError::Busy as i32);
+        assert!(protocol(&mut runtime, Transport::Uart, &status).is_empty());
+
+        confirm(&mut runtime, confirmation_id, ConfirmationChoice::Reject);
+        let pending = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(sign_request("again".into())),
+        );
+        assert!(pending
+            .iter()
+            .any(|effect| matches!(effect, CoreEffect::ConfirmationRequired(_))));
+        assert!(matches!(
+            protocol(&mut runtime, Transport::Uart, &status).as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(_))
+                }
+            )]
+        ));
+    }
+
+    #[test]
+    fn entering_busy_discards_later_frames_in_the_same_chunk() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+
+        let mut requests = frame(sign_request("hello".into()));
+        requests.extend(frame(req_data::Payload::LockRequest(proto::LockRequest {})));
+        let outputs = protocol(&mut runtime, Transport::Uart, &requests);
+        let confirmation_id = outputs
+            .iter()
+            .find_map(|effect| match effect {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(runtime.state(), WalletState::Busy);
+        confirm(&mut runtime, confirmation_id, ConfirmationChoice::Reject);
+        assert_eq!(runtime.state(), WalletState::Ready);
+        assert!(matches!(
+            protocol(
+                &mut runtime,
+                Transport::Uart,
+                &frame(req_data::Payload::StatusRequest(proto::StatusRequest {})),
+            )
+            .as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::StatusResponse(_))
+                }
+            )]
+        ));
+    }
+
+    #[test]
+    fn pending_confirmation_discards_partial_frames() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(sign_request("hello".into())),
+        );
+        let id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let status = frame(req_data::Payload::StatusRequest(proto::StatusRequest {}));
+        let middle = status.len() / 2;
+
+        assert!(matches!(
+            protocol(&mut runtime, Transport::Uart, &status[..middle]).as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(_))
+                }
+            )]
+        ));
+        confirm(&mut runtime, id, ConfirmationChoice::Reject);
+        assert!(protocol(&mut runtime, Transport::Uart, &status[middle..]).is_empty());
+        assert!(matches!(
+            protocol(&mut runtime, Transport::Uart, &status).as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::StatusResponse(_))
+                }
+            )]
+        ));
+    }
+
+    #[test]
+    fn fido_uses_same_confirmation_service() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let outputs = fido(
+            &mut runtime,
+            42,
+            FidoRequest::Confirm {
+                operation: FidoOperation::Authenticate,
+                rp_id: b"ssh:",
+                account: b"OSKey",
+            },
+        );
+        assert!(matches!(
+            outputs.as_slice(),
+            [
+                CoreEffect::ConfirmationRequired(_),
+                CoreEffect::WalletState(WalletState::Busy)
+            ]
+        ));
+        let id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        assert!(matches!(
+            runtime.confirmation(id),
+            Some(ConfirmationDetails::Fido(_))
+        ));
+        assert!(matches!(
+            confirm(&mut runtime, id, ConfirmationChoice::Approve).as_slice(),
+            [
+                CoreEffect::Fido {
+                    id: 42,
+                    result: FidoOutput {
+                        status: FidoStatus::Success,
+                        ..
+                    }
+                },
+                CoreEffect::ConfirmationCompleted {
+                    id: completed_id,
+                    outcome: ConfirmationOutcome::Approved
+                },
+                CoreEffect::WalletState(WalletState::Ready)
+            ] if *completed_id == id
+        ));
+    }
+
+    #[test]
+    fn fido_approval_does_not_hold_runtime_busy() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let outputs = fido(
+            &mut runtime,
+            42,
+            FidoRequest::Confirm {
+                operation: FidoOperation::Authenticate,
+                rp_id: b"example.com",
+                account: b"OSKey",
+            },
+        );
+        let confirmation_id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        confirm(&mut runtime, confirmation_id, ConfirmationChoice::Approve);
+        assert_eq!(runtime.state(), WalletState::Ready);
+        assert!(matches!(
+            protocol(
+                &mut runtime,
+                Transport::Uart,
+                &frame(req_data::Payload::StatusRequest(proto::StatusRequest {})),
+            )
+            .as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::StatusResponse(_))
+                }
+            )]
+        ));
+    }
+
+    #[test]
+    fn fido_cancel_does_not_cancel_wallet_confirmation() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(sign_request("hello".into())),
+        );
+        let id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(fido(&mut runtime, 1, FidoRequest::CancelConfirmation).is_empty());
+        assert!(runtime.confirmation(id).is_some());
+        assert!(!confirm(&mut runtime, id, ConfirmationChoice::Approve).is_empty());
+    }
+
+    #[test]
+    fn fido_cancel_completes_its_confirmation() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let outputs = fido(
+            &mut runtime,
+            77,
+            FidoRequest::Confirm {
+                operation: FidoOperation::Select,
+                rp_id: b"",
+                account: b"",
+            },
+        );
+        let id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(fido(&mut runtime, 78, FidoRequest::CancelConfirmation).is_empty());
+        assert!(runtime.confirmation(id).is_some());
+
+        let outputs = fido(&mut runtime, 77, FidoRequest::CancelConfirmation);
+        assert!(matches!(
+            outputs.as_slice(),
+            [
+                CoreEffect::Fido {
+                    id: 77,
+                    result: FidoOutput {
+                        status: FidoStatus::Cancelled,
+                        ..
+                    }
+                },
+                CoreEffect::ConfirmationCompleted {
+                    id: completed_id,
+                    outcome: ConfirmationOutcome::Cancelled
+                },
+                CoreEffect::WalletState(WalletState::Ready)
+            ] if *completed_id == id
+        ));
+        assert!(runtime.confirmation(id).is_none());
+    }
+
+    #[test]
+    fn large_message_is_released_after_preparing_confirmation() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(sign_request("a".repeat(8192))),
+        );
+        let id = outputs
+            .iter()
+            .find_map(|output| match output {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let Some(ConfirmationDetails::EthMessage(details)) = runtime.confirmation(id) else {
+            panic!("expected message details");
+        };
+        assert!(details.truncated);
+        assert_eq!(details.preview.len(), 256);
+        assert_eq!(details.byte_length, 8192);
     }
 }

@@ -1,13 +1,16 @@
 use anyhow::{bail, Result};
-use oskey_bus::proto;
 use oskey_wallet::alg::crypto::{Hash, HMAC, P256};
 use oskey_wallet::path::{ChildNumber, DerivationPath};
 use oskey_wallet::wallets::{Curve, ExtendedPrivKey};
+
+use crate::{FidoConfirmation, FidoOperation};
 
 pub const CREDENTIAL_ID_SIZE: usize = 64;
 pub const NONCE_SIZE: usize = 16;
 
 const VERSION: u8 = 2;
+const VERSION_MASK: u8 = 0x3f;
+const CRED_PROTECT_SHIFT: u8 = 6;
 const NONCE_OFFSET: usize = 1;
 const RP_ID_HASH_OFFSET: usize = NONCE_OFFSET + NONCE_SIZE;
 const TAG_OFFSET: usize = RP_ID_HASH_OFFSET + 32;
@@ -19,28 +22,31 @@ pub struct Credential {
 }
 
 pub fn confirmation(
-    operation: proto::FidoOperation,
+    operation: FidoOperation,
     rp_id: &[u8],
     account: &[u8],
-) -> Result<proto::FidoConfirmation> {
-    if operation == proto::FidoOperation::Unspecified {
-        bail!("Invalid FIDO2 operation");
-    }
-
-    Ok(proto::FidoConfirmation {
-        operation: operation as i32,
+) -> Result<FidoConfirmation> {
+    Ok(FidoConfirmation {
+        operation,
         rp_id: core::str::from_utf8(rp_id)?.into(),
         account: account.into(),
-        account_is_text: core::str::from_utf8(account)
-            .is_ok_and(|value| value.chars().all(|character| !character.is_control())),
+        account_is_text: account.iter().all(|byte| (b' '..=b'~').contains(byte)),
     })
 }
 
-pub fn create(seed: &[u8], rp_id: &str, nonce: &[u8; NONCE_SIZE]) -> Result<Credential> {
+pub fn create(
+    seed: &[u8],
+    rp_id: &str,
+    nonce: &[u8; NONCE_SIZE],
+    cred_protect: u8,
+) -> Result<Credential> {
+    if !(1..=3).contains(&cred_protect) {
+        bail!("Invalid FIDO2 credential protection level");
+    }
     let rp_id_hash = Hash::sha256(rp_id.as_bytes())?;
 
     let mut id = [0; CREDENTIAL_ID_SIZE];
-    id[0] = VERSION;
+    id[0] = VERSION | ((cred_protect - 1) << CRED_PROTECT_SHIFT);
     id[NONCE_OFFSET..RP_ID_HASH_OFFSET].copy_from_slice(nonce);
     id[RP_ID_HASH_OFFSET..TAG_OFFSET].copy_from_slice(&rp_id_hash);
 
@@ -64,7 +70,7 @@ pub fn sign(
     rp_id_hash: &[u8],
     hash: &[u8],
 ) -> Result<heapless::Vec<u8, 72>> {
-    let key_root = authenticate(seed, credential_id, rp_id_hash)?;
+    let (key_root, _) = authenticate(seed, credential_id, rp_id_hash)?;
     let key = derive_identity(
         key_root,
         &identity(
@@ -78,14 +84,19 @@ pub fn sign(
     P256::sign(&key.secret_key, hash)
 }
 
-pub fn validate(seed: &[u8], credential_id: &[u8], rp_id_hash: &[u8]) -> Result<()> {
-    authenticate(seed, credential_id, rp_id_hash).map(|_| ())
+pub fn validate(seed: &[u8], credential_id: &[u8], rp_id_hash: &[u8]) -> Result<u8> {
+    authenticate(seed, credential_id, rp_id_hash).map(|(_, cred_protect)| cred_protect)
 }
 
-fn authenticate(seed: &[u8], credential_id: &[u8], rp_id_hash: &[u8]) -> Result<ExtendedPrivKey> {
+fn authenticate(
+    seed: &[u8],
+    credential_id: &[u8],
+    rp_id_hash: &[u8],
+) -> Result<(ExtendedPrivKey, u8)> {
     if credential_id.len() != CREDENTIAL_ID_SIZE
         || rp_id_hash.len() != 32
-        || credential_id[0] != VERSION
+        || credential_id[0] & VERSION_MASK != VERSION
+        || credential_id[0] >> CRED_PROTECT_SHIFT == 3
         || credential_id[RP_ID_HASH_OFFSET..TAG_OFFSET] != *rp_id_hash
     {
         bail!("Invalid FIDO2 credential");
@@ -103,7 +114,10 @@ fn authenticate(seed: &[u8], credential_id: &[u8], rp_id_hash: &[u8]) -> Result<
         bail!("Invalid FIDO2 credential tag");
     }
 
-    namespace.child(ChildNumber::hardened_from_u32(1)?)
+    Ok((
+        namespace.child(ChildNumber::hardened_from_u32(1)?)?,
+        (credential_id[0] >> CRED_PROTECT_SHIFT) + 1,
+    ))
 }
 
 fn namespace_key(seed: &[u8]) -> Result<ExtendedPrivKey> {
@@ -136,7 +150,7 @@ mod tests {
 
     #[test]
     fn credential_matches_recovery_vector() {
-        let credential = create(&SEED, "ssh:", &NONCE).unwrap();
+        let credential = create(&SEED, "ssh:", &NONCE, 1).unwrap();
 
         assert_eq!(
             hex::encode(credential.id),
@@ -153,26 +167,32 @@ mod tests {
     #[test]
     fn confirmation_preserves_structured_fields() {
         let prompt = confirmation(
-            proto::FidoOperation::Register,
+            FidoOperation::Register,
             b"example.com",
             b"person@example.com",
         )
         .unwrap();
 
-        assert_eq!(prompt.operation, proto::FidoOperation::Register as i32);
+        assert_eq!(prompt.operation, FidoOperation::Register);
         assert_eq!(prompt.rp_id, "example.com");
         assert_eq!(prompt.account, b"person@example.com");
         assert!(prompt.account_is_text);
 
-        let binary = confirmation(proto::FidoOperation::Authenticate, b"ssh:", &[0, 1]).unwrap();
+        let binary = confirmation(FidoOperation::Authenticate, b"ssh:", &[0, 1]).unwrap();
         assert!(!binary.account_is_text);
-        assert!(confirmation(proto::FidoOperation::Unspecified, b"", b"").is_err());
-        assert!(confirmation(proto::FidoOperation::Select, &[0xff], b"").is_err());
+        let unicode = confirmation(
+            FidoOperation::Authenticate,
+            b"example.com",
+            "账户".as_bytes(),
+        )
+        .unwrap();
+        assert!(!unicode.account_is_text);
+        assert!(confirmation(FidoOperation::Select, &[0xff], b"").is_err());
     }
 
     #[test]
     fn credential_is_bound_to_relying_party() {
-        let mut credential = create(&SEED, "ssh:", &NONCE).unwrap();
+        let mut credential = create(&SEED, "ssh:", &NONCE, 1).unwrap();
         let hash = [3; 32];
 
         assert!(sign(
@@ -206,8 +226,8 @@ mod tests {
 
     #[test]
     fn each_registration_creates_a_new_key() {
-        let first = create(&SEED, "ssh:", &[1; NONCE_SIZE]).unwrap();
-        let second = create(&SEED, "ssh:", &[2; NONCE_SIZE]).unwrap();
+        let first = create(&SEED, "ssh:", &[1; NONCE_SIZE], 1).unwrap();
+        let second = create(&SEED, "ssh:", &[2; NONCE_SIZE], 1).unwrap();
 
         assert_ne!(first.id, second.id);
         assert_ne!(first.public_key, second.public_key);
@@ -215,10 +235,36 @@ mod tests {
 
     #[test]
     fn credential_is_bound_to_seed() {
-        let credential = create(&SEED, "ssh:", &NONCE).unwrap();
+        let credential = create(&SEED, "ssh:", &NONCE, 1).unwrap();
         let mut other_seed = SEED;
         other_seed[0] ^= 1;
 
         assert!(validate(&other_seed, &credential.id, &Hash::sha256(b"ssh:").unwrap()).is_err());
+    }
+
+    #[test]
+    fn credential_protection_is_authenticated() {
+        for level in 1..=3 {
+            let credential = create(&SEED, "example.com", &NONCE, level).unwrap();
+            assert_eq!(
+                validate(
+                    &SEED,
+                    &credential.id,
+                    &Hash::sha256(b"example.com").unwrap()
+                )
+                .unwrap(),
+                level
+            );
+        }
+
+        let mut credential = create(&SEED, "example.com", &NONCE, 1).unwrap();
+        credential.id[0] |= 1 << CRED_PROTECT_SHIFT;
+        assert!(validate(
+            &SEED,
+            &credential.id,
+            &Hash::sha256(b"example.com").unwrap()
+        )
+        .is_err());
+        assert!(create(&SEED, "example.com", &NONCE, 0).is_err());
     }
 }

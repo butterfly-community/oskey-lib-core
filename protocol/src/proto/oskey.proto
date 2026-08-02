@@ -13,15 +13,12 @@ message ReqData
 		LockRequest lock_request = 26;
 		InitWalletCustomRequest init_custom_request = 30;
 		InitWalletRequest init_request = 40;
-		GenerateMnemonicRequest generate_mnemonic_request = 41;
 		DerivePublicKeyRequest derive_public_key_request = 50;
 		SignEthRequest sign_eth_request = 70;
-		UserActionRequest user_action_request = 81;
-		DeviceRequest device_request = 82;
-		Fido2RegisterRequest fido2_register_request = 83;
-		Fido2SignRequest fido2_sign_request = 84;
-		ConfirmationControl confirmation_control = 85;
 	}
+	reserved 41, 81 to 85;
+	reserved "generate_mnemonic_request", "user_action_request", "device_request",
+		 "fido2_register_request", "fido2_sign_request", "confirmation_control";
 }
 
 message ResData
@@ -36,11 +33,9 @@ message ResData
 		DerivePublicKeyResponse derive_public_key_response = 51;
 		SignResponse sign_response = 61;
 		WaitForUserActionResponse wait_for_user_action_response = 80;
-		DisplayResponse display_response = 90;
-		ConfirmationPrompt confirmation_prompt = 91;
-		Fido2Response fido2_response = 92;
-		ConfirmationResult confirmation_result = 93;
 	}
+	reserved 90 to 93;
+	reserved "display_response", "confirmation_prompt", "fido2_response", "confirmation_result";
 }
 
 message Unknown
@@ -76,7 +71,8 @@ message StatusResponse
 message UnlockRequest
 {
 	bytes hash = 1;
-	optional string pin_text = 2;
+	reserved 2;
+	reserved "pin_text";
 }
 
 message LockRequest
@@ -88,7 +84,8 @@ message InitWalletCustomRequest
 	string words = 2;
 	string password = 3;
 	bytes pin = 4;
-	optional string pin_text = 5;
+	reserved 5;
+	reserved "pin_text";
 }
 
 message InitWalletRequest
@@ -97,13 +94,8 @@ message InitWalletRequest
 	string password = 2;
 	optional bytes seed = 3;
 	bytes pin = 4;
-	optional string pin_text = 5;
-}
-
-message GenerateMnemonicRequest
-{
-	uint32 length = 1;
-	optional bytes entropy = 2;
+	reserved 5;
+	reserved "pin_text";
 }
 
 message InitWalletResponse
@@ -185,123 +177,4 @@ message ErrorResponse
 
 message WaitForUserActionResponse
 {
-}
-
-enum UserAction
-{
-	USER_ACTION_UNSPECIFIED = 0;
-	USER_ACTION_APPROVE = 1;
-	USER_ACTION_REJECT = 2;
-}
-
-message UserActionRequest
-{
-	UserAction action = 1;
-}
-
-enum DisplayAction
-{
-	DISPLAY_ACTION_UNSPECIFIED = 0;
-	DISPLAY_ACTION_READY = 1;
-	DISPLAY_ACTION_MNEMONIC = 2;
-	DISPLAY_ACTION_ERROR = 4;
-}
-
-message DisplayResponse
-{
-	DisplayAction action = 1;
-	string text = 2;
-	AppError error = 3;
-	uint32 value = 4;
-}
-
-enum FidoOperation
-{
-	FIDO_OPERATION_UNSPECIFIED = 0;
-	FIDO_OPERATION_REGISTER = 1;
-	FIDO_OPERATION_AUTHENTICATE = 2;
-	FIDO_OPERATION_SELECT = 3;
-}
-
-message EthMessageConfirmation
-{
-	string preview = 1;
-	uint64 byte_length = 2;
-	bytes signing_hash = 3;
-	bool truncated = 4;
-}
-
-message EthTransactionConfirmation
-{
-	uint64 chain_id = 1;
-	uint64 nonce = 2;
-	string gas_price = 3;
-	uint64 gas_limit = 4;
-	bytes to = 5;
-	bool contract_creation = 6;
-	string value = 7;
-	uint64 input_length = 8;
-	bytes selector = 9;
-	bytes input_hash = 10;
-	bytes signing_hash = 11;
-}
-
-message FidoConfirmation
-{
-	FidoOperation operation = 1;
-	string rp_id = 2;
-	bytes account = 3;
-	bool account_is_text = 4;
-}
-
-message ConfirmationControl
-{
-	bool active = 1;
-	FidoConfirmation fido = 2;
-}
-
-message ConfirmationPrompt
-{
-	bool active = 1;
-	oneof content
-	{
-		EthMessageConfirmation eth_message = 10;
-		EthTransactionConfirmation eth_transaction = 11;
-		FidoConfirmation fido = 12;
-	}
-}
-
-message ConfirmationResult
-{
-	bool approved = 1;
-}
-
-enum DeviceAction
-{
-	DEVICE_ACTION_UNSPECIFIED = 0;
-	DEVICE_ACTION_RESTART = 1;
-	DEVICE_ACTION_RESET_STORAGE = 2;
-}
-
-message DeviceRequest
-{
-	DeviceAction action = 1;
-}
-
-message Fido2RegisterRequest
-{
-	string rp_id = 1;
-}
-
-message Fido2SignRequest
-{
-	bytes credential_id = 1;
-	bytes rp_id_hash = 2;
-	bytes hash = 3;
-}
-
-message Fido2Response
-{
-	bytes credential_id = 1;
-	bytes data = 2;
 }

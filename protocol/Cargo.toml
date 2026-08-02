@@ -1,5 +1,5 @@
 [package]
-name = "oskey-bus"
+name = "oskey-protocol"
 version = "0.0.1"
 edition = "2021"
 description = ""
@@ -9,6 +9,7 @@ license = ""
 prost.workspace = true
 
 anyhow.workspace = true
+zeroize.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true

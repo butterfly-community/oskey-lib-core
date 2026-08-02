@@ -12,12 +12,9 @@ crypto-psa = ["oskey-chain/crypto-psa", "oskey-wallet/crypto-psa"]
 crypto-link = ["oskey-chain/crypto-link", "oskey-wallet/crypto-psa", "oskey-wallet/build"]
 
 [dependencies]
-oskey-bus.workspace = true
+oskey-protocol.workspace = true
 oskey-chain.workspace = true
 oskey-wallet.workspace = true
 
 anyhow.workspace = true
 zeroize.workspace = true
-
-[dev-dependencies]
-p256.workspace = true

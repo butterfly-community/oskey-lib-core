@@ -1,11 +1,12 @@
 extern crate alloc;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloy_consensus::private::alloy_primitives::{eip191_hash_message, keccak256, TxKind};
 use alloy_consensus::SignableTransaction;
 use alloy_consensus::TxEip2930;
-use anyhow::{anyhow, Result};
-use oskey_bus::proto;
+use anyhow::{anyhow, bail, Result};
+
+use crate::{EthMessageConfirmation, EthTransactionConfirmation};
 
 const MESSAGE_PREVIEW_BYTES: usize = 256;
 
@@ -16,18 +17,33 @@ impl OSKeyTxEip191 {
         eip191_hash_message(message).into()
     }
 
-    pub fn confirmation(message: &str, hash: &[u8; 32]) -> proto::EthMessageConfirmation {
-        let mut preview_end = message.len().min(MESSAGE_PREVIEW_BYTES);
-        while !message.is_char_boundary(preview_end) {
-            preview_end -= 1;
+    pub fn confirmation(
+        message: &str,
+        hash: &[u8; 32],
+        from: [u8; 20],
+    ) -> Result<EthMessageConfirmation> {
+        if !message
+            .bytes()
+            .all(|byte| byte == b'\n' || (b' '..=b'~').contains(&byte))
+        {
+            bail!("Ethereum message cannot be displayed safely");
         }
+        let preview_end = message.len().min(MESSAGE_PREVIEW_BYTES);
 
-        proto::EthMessageConfirmation {
+        Ok(EthMessageConfirmation {
+            from,
             preview: message[..preview_end].into(),
             byte_length: message.len() as u64,
-            signing_hash: hash.to_vec(),
+            signing_hash: *hash,
             truncated: preview_end < message.len(),
+        })
+    }
+
+    pub fn address(public_key: &[u8]) -> Result<[u8; 20]> {
+        if public_key.len() != 65 || public_key[0] != 4 {
+            bail!("Invalid Ethereum public key");
         }
+        Ok(keccak256(&public_key[1..])[12..].try_into()?)
     }
 }
 
@@ -36,30 +52,32 @@ pub struct OSKeyTxEip2930 {
     pub tx: TxEip2930,
 }
 
-impl OSKeyTxEip2930 {
-    pub fn from_proto(proto: proto::AppEthTxEip2930) -> Result<Self> {
-        if proto
-            .access_list
-            .as_ref()
-            .is_some_and(|access_list| !access_list.is_empty())
-        {
-            return Err(anyhow!("EIP-2930 access lists are unsupported"));
-        }
+pub struct Eip2930Transaction {
+    pub chain_id: u64,
+    pub nonce: u64,
+    pub gas_price: String,
+    pub gas_limit: u64,
+    pub to: Option<String>,
+    pub value: String,
+    pub input: Vec<u8>,
+}
 
+impl OSKeyTxEip2930 {
+    pub fn new(transaction: Eip2930Transaction) -> Result<Self> {
         let tx = TxEip2930 {
-            chain_id: proto.chain_id,
-            nonce: proto.nonce,
-            gas_price: proto.gas_price.parse()?,
-            gas_limit: proto.gas_limit,
-            to: match proto.to {
+            chain_id: transaction.chain_id,
+            nonce: transaction.nonce,
+            gas_price: transaction.gas_price.parse()?,
+            gas_limit: transaction.gas_limit,
+            to: match transaction.to {
                 Some(to) => TxKind::Call(to.parse()?),
                 None => TxKind::Create,
             },
-            value: proto
+            value: transaction
                 .value
                 .parse()
                 .map_err(|_| anyhow!("u256 parse error"))?,
-            input: proto.input.unwrap_or_default().into(),
+            input: transaction.input.into(),
             access_list: Default::default(),
         };
         Ok(Self { tx })
@@ -75,13 +93,14 @@ impl OSKeyTxEip2930 {
         self.tx.signature_hash().into()
     }
 
-    pub fn confirmation(&self, hash: &[u8; 32]) -> proto::EthTransactionConfirmation {
+    pub fn confirmation(&self, hash: &[u8; 32], from: [u8; 20]) -> EthTransactionConfirmation {
         let (to, contract_creation) = match &self.tx.to {
             TxKind::Call(address) => (address.as_slice().to_vec(), false),
             TxKind::Create => (Vec::new(), true),
         };
 
-        proto::EthTransactionConfirmation {
+        EthTransactionConfirmation {
+            from,
             chain_id: self.tx.chain_id,
             nonce: self.tx.nonce,
             gas_price: self.tx.gas_price.to_string(),
@@ -91,8 +110,8 @@ impl OSKeyTxEip2930 {
             value: self.tx.value.to_string(),
             input_length: self.tx.input.len() as u64,
             selector: self.tx.input.get(..4).unwrap_or_default().to_vec(),
-            input_hash: keccak256(&self.tx.input).to_vec(),
-            signing_hash: hash.to_vec(),
+            input_hash: keccak256(&self.tx.input).into(),
+            signing_hash: *hash,
         }
     }
 }
@@ -102,22 +121,20 @@ mod tests {
     extern crate std;
     use super::*;
     use alloc::string::ToString;
-    use alloc::vec;
 
     #[test]
     fn test_eth_eip2930_transaction() {
-        let source = proto::AppEthTxEip2930 {
+        let source = Eip2930Transaction {
             chain_id: 0xaa36a7,
             nonce: 0x5,
             gas_price: "1112408".to_string(),
             gas_limit: 0x5208,
             to: Some("0x00Ab1EAd740f95aDE25b78B3137fdcC333326e7d".to_string()),
             value: "0x16345785d8a0000".to_string(),
-            input: None,
-            access_list: None,
+            input: Vec::new(),
         };
 
-        let tx = OSKeyTxEip2930::from_proto(source).unwrap();
+        let tx = OSKeyTxEip2930::new(source).unwrap();
 
         assert_eq!(tx.rlp_encode(), hex::decode("01ec83aa36a7058310f9588252089400ab1ead740f95ade25b78b3137fdcc333326e7d88016345785d8a000080c0").unwrap().as_slice());
 
@@ -133,21 +150,21 @@ mod tests {
 
     #[test]
     fn test_transaction_confirmation() {
-        let source = proto::AppEthTxEip2930 {
+        let source = Eip2930Transaction {
             chain_id: 0xaa36a7,
             nonce: 0x5,
             gas_price: "1112408".to_string(),
             gas_limit: 0x5208,
             to: Some("0x00Ab1EAd740f95aDE25b78B3137fdcC333326e7d".to_string()),
             value: "0x16345785d8a0000".to_string(),
-            input: Some([0xa9, 0x05, 0x9c, 0xbb].repeat(512)),
-            access_list: None,
+            input: [0xa9, 0x05, 0x9c, 0xbb].repeat(512),
         };
 
-        let tx = OSKeyTxEip2930::from_proto(source).unwrap();
+        let tx = OSKeyTxEip2930::new(source).unwrap();
         let hash = tx.hash();
-        let confirmation = tx.confirmation(&hash);
+        let confirmation = tx.confirmation(&hash, [1; 20]);
 
+        assert_eq!(confirmation.from, [1; 20]);
         assert_eq!(confirmation.chain_id, 11155111);
         assert_eq!(confirmation.nonce, 5);
         assert_eq!(confirmation.gas_price, "1112408");
@@ -160,22 +177,6 @@ mod tests {
         assert_eq!(confirmation.input_length, 2048);
         assert_eq!(confirmation.selector, [0xa9, 0x05, 0x9c, 0xbb]);
         assert_eq!(confirmation.signing_hash, hash);
-    }
-
-    #[test]
-    fn test_rejects_nonempty_access_list() {
-        let source = proto::AppEthTxEip2930 {
-            chain_id: 1,
-            nonce: 0,
-            gas_price: "1".to_string(),
-            gas_limit: 21000,
-            to: None,
-            value: "0".to_string(),
-            input: None,
-            access_list: Some(vec![0xc0]),
-        };
-
-        assert!(OSKeyTxEip2930::from_proto(source).is_err());
     }
 
     #[test]
@@ -199,16 +200,49 @@ mod tests {
 
     #[test]
     fn test_message_confirmation_is_bounded() {
-        let message = "测".repeat(4096);
+        let message = "a".repeat(4096);
         let hash = OSKeyTxEip191::hash_message(message.as_bytes());
-        let confirmation = OSKeyTxEip191::confirmation(&message, &hash);
+        let confirmation = OSKeyTxEip191::confirmation(&message, &hash, [2; 20]).unwrap();
 
+        assert_eq!(confirmation.from, [2; 20]);
         assert!(confirmation.truncated);
-        assert_eq!(confirmation.byte_length, 12288);
+        assert_eq!(confirmation.byte_length, 4096);
         assert_eq!(confirmation.signing_hash, hash);
         assert!(confirmation.preview.len() <= MESSAGE_PREVIEW_BYTES);
-        assert!(confirmation
-            .preview
-            .is_char_boundary(confirmation.preview.len()));
+        assert_eq!(confirmation.preview.len(), MESSAGE_PREVIEW_BYTES);
+    }
+
+    #[test]
+    fn message_confirmation_rejects_hidden_suffix() {
+        let message = "approve\0hidden";
+        let hash = OSKeyTxEip191::hash_message(message.as_bytes());
+
+        assert!(OSKeyTxEip191::confirmation(message, &hash, [0; 20]).is_err());
+    }
+
+    #[test]
+    fn message_confirmation_accepts_multiline_text() {
+        let message = "example.com wants you to sign in\nURI: https://example.com";
+        let hash = OSKeyTxEip191::hash_message(message.as_bytes());
+        let confirmation = OSKeyTxEip191::confirmation(message, &hash, [0; 20]).unwrap();
+
+        assert_eq!(confirmation.preview, message);
+    }
+
+    #[test]
+    fn message_confirmation_rejects_unrenderable_text() {
+        let message = "批准";
+        let hash = OSKeyTxEip191::hash_message(message.as_bytes());
+        assert!(OSKeyTxEip191::confirmation(message, &hash, [0; 20]).is_err());
+    }
+
+    #[test]
+    fn derives_ethereum_address_from_public_key() {
+        let public_key = hex::decode("04401b572dd885235567e0177711e913ec1587344669936f6358c86bcc73c189be3f2340a88249509b4b9bce6f5190d4e537ec314026ee849707e28ad57a1723b2").unwrap();
+        assert_eq!(
+            hex::encode(OSKeyTxEip191::address(&public_key).unwrap()),
+            "938247a9b8a889a18637d1e769ac721655f3aa1a"
+        );
+        assert!(OSKeyTxEip191::address(&public_key[1..]).is_err());
     }
 }

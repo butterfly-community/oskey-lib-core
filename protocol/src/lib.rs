@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use anyhow::anyhow;
 use anyhow::Result;
 pub use prost::Message;
+use zeroize::Zeroize;
 
 pub mod proto {
     include!("proto/oskey.rs");
@@ -25,6 +26,8 @@ impl Default for FrameParser {
 impl FrameParser {
     const MAGIC: &'static [u8] = "₿".as_bytes();
     const HEADER_LEN: usize = Self::MAGIC.len() + 2;
+    // Allows an 8 KiB request body plus its protobuf envelope.
+    const MAX_PAYLOAD_LEN: usize = 9 * 1024;
     const MAX_RETAINED_FRAME_CAPACITY: usize = 1024;
 
     pub const fn new() -> Self {
@@ -35,9 +38,21 @@ impl FrameParser {
         self.buffer.extend_from_slice(data);
     }
 
-    fn check(&mut self) -> bool {
+    pub fn clear(&mut self) {
+        self.buffer.zeroize();
+        self.buffer = Vec::new();
+    }
+
+    fn discard(&mut self, len: usize) {
+        let remaining = self.buffer.len() - len;
+        self.buffer.copy_within(len.., 0);
+        self.buffer[remaining..].zeroize();
+        self.buffer.truncate(remaining);
+    }
+
+    fn payload_len(&mut self) -> Option<usize> {
         if self.buffer.len() < Self::HEADER_LEN {
-            return false;
+            return None;
         }
 
         if !self.buffer.starts_with(Self::MAGIC) && !self.buffer.is_empty() {
@@ -46,27 +61,29 @@ impl FrameParser {
                 .windows(Self::MAGIC.len())
                 .position(|window| window == Self::MAGIC)
             {
-                self.buffer.drain(..pos);
+                self.discard(pos);
             } else if self.buffer.len() > 64 {
-                self.buffer.clear();
+                self.clear();
             }
         }
 
         if self.buffer.len() < Self::HEADER_LEN || !self.buffer.starts_with(Self::MAGIC) {
-            return false;
-        }
-
-        let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
-
-        self.buffer.len() >= Self::HEADER_LEN + payload_len
-    }
-
-    pub fn unpack(&mut self) -> Option<Result<ReqData>> {
-        if !self.check() {
             return None;
         }
 
-        let payload_len = u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize;
+        Some(u16::from_be_bytes([self.buffer[3], self.buffer[4]]) as usize)
+    }
+
+    pub fn unpack(&mut self) -> Option<Result<ReqData>> {
+        let payload_len = self.payload_len()?;
+        if payload_len > Self::MAX_PAYLOAD_LEN {
+            self.clear();
+            return Some(Err(anyhow!("Frame exceeds maximum payload size")));
+        }
+        if self.buffer.len() < Self::HEADER_LEN + payload_len {
+            return None;
+        }
+
         let frame_len = Self::HEADER_LEN + payload_len;
 
         let decoded = proto::ReqData::decode(&self.buffer[Self::HEADER_LEN..frame_len]);
@@ -74,19 +91,40 @@ impl FrameParser {
         if frame_len == self.buffer.len()
             && self.buffer.capacity() > Self::MAX_RETAINED_FRAME_CAPACITY
         {
-            self.buffer = Vec::new();
+            self.clear();
         } else {
-            self.buffer.drain(..frame_len);
+            self.discard(frame_len);
         }
         Some(decoded.map_err(|e| anyhow!(e)))
     }
 
     pub fn pack(data: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(data.len()).expect("frame payload exceeds u16 length field");
+
         let mut frame = Vec::with_capacity(Self::HEADER_LEN + data.len());
         frame.extend_from_slice(Self::MAGIC);
-        frame.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&len.to_be_bytes());
         frame.extend_from_slice(data);
         frame
+    }
+
+    pub fn pack_message(message: &impl Message) -> Vec<u8> {
+        let len = message.encoded_len();
+        let frame_len = u16::try_from(len).expect("encoded message exceeds u16 length field");
+
+        let mut frame = Vec::with_capacity(Self::HEADER_LEN + len);
+        frame.extend_from_slice(Self::MAGIC);
+        frame.extend_from_slice(&frame_len.to_be_bytes());
+        message
+            .encode(&mut frame)
+            .expect("encoding into Vec cannot fail");
+        frame
+    }
+}
+
+impl Drop for FrameParser {
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 
@@ -163,6 +201,36 @@ mod tests {
     }
 
     #[test]
+    fn test_pack_message() {
+        let request = ReqData {
+            payload: Some(ReqPayload::VersionRequest(VersionRequest {})),
+        };
+        assert_eq!(
+            FrameParser::pack_message(&request),
+            FrameParser::pack(&request.encode_to_vec())
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "frame payload exceeds u16 length field")]
+    fn test_oversized_frame_is_rejected() {
+        let payload = alloc::vec![0; u16::MAX as usize + 1];
+        FrameParser::pack(&payload);
+    }
+
+    #[test]
+    #[should_panic(expected = "encoded message exceeds u16 length field")]
+    fn test_oversized_message_is_rejected() {
+        let response = proto::ResData {
+            payload: Some(ResPayload::SignResponse(proto::SignResponse {
+                message: alloc::vec![0; u16::MAX as usize + 1],
+                ..Default::default()
+            })),
+        };
+        FrameParser::pack_message(&response);
+    }
+
+    #[test]
     fn test_large_consumed_buffer_is_released() {
         let frame = FrameParser::pack(&get_test_req_payload_bytes());
         let mut parser = FrameParser::new();
@@ -171,6 +239,19 @@ mod tests {
 
         assert!(parser.unpack().unwrap().is_ok());
         assert_eq!(parser.buffer.capacity(), 0);
+    }
+
+    #[test]
+    fn test_oversized_frame_is_rejected_from_its_header() {
+        let mut parser = FrameParser::new();
+        parser.push(FrameParser::MAGIC);
+        parser.push(&u16::MAX.to_be_bytes());
+
+        assert!(parser.unpack().unwrap().is_err());
+        assert!(parser.buffer.is_empty());
+
+        parser.push(&FrameParser::pack(&get_test_req_payload_bytes()));
+        assert!(parser.unpack().unwrap().is_ok());
     }
 
     #[test]
@@ -222,6 +303,28 @@ mod tests {
         let payload = req_2.unwrap().map_err(|e| anyhow!(e))?;
         assert_eq!(payload.encode_to_vec(), bytes);
         Ok(())
+    }
+
+    #[test]
+    fn clear_releases_large_frame_buffer() {
+        let mut parser = FrameParser::new();
+        parser.push(&[0; 4096]);
+        assert!(parser.buffer.capacity() >= 4096);
+
+        parser.clear();
+
+        assert!(parser.buffer.is_empty());
+        assert_eq!(parser.buffer.capacity(), 0);
+    }
+
+    #[test]
+    fn invalid_input_releases_large_frame_buffer() {
+        let mut parser = FrameParser::new();
+        parser.push(&[0; 4096]);
+
+        assert!(parser.unpack().is_none());
+        assert!(parser.buffer.is_empty());
+        assert_eq!(parser.buffer.capacity(), 0);
     }
 
     #[test]

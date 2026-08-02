@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["wallet", "bus", "chain", "action"]
+members = ["wallet", "protocol", "chain", "action"]
 
 [workspace.dependencies]
-oskey-bus = { path = "bus" }
+oskey-protocol = { path = "protocol" }
 oskey-chain = { path = "chain", default-features = false }
 oskey-wallet = { path = "wallet" }
 
