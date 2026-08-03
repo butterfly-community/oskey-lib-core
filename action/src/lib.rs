@@ -11,7 +11,7 @@ use anyhow::{anyhow, Result};
 use oskey_chain::eth::{Eip2930Transaction, OSKeyTxEip191, OSKeyTxEip2930};
 pub use oskey_chain::{ConfirmationDetails, FidoOperation};
 use oskey_protocol::proto::{req_data, res_data};
-pub use oskey_protocol::{proto, FrameParser, Message};
+pub use oskey_protocol::{proto, FrameParser};
 use oskey_wallet::alg::crypto;
 use oskey_wallet::path::DerivationPath;
 use oskey_wallet::{mnemonic, wallets};
@@ -131,6 +131,7 @@ pub enum FidoRequest<'a> {
         credential_id: &'a [u8],
         rp_id_hash: &'a [u8],
         hash: &'a [u8],
+        preflight: bool,
     },
     Confirm {
         operation: FidoOperation,
@@ -174,7 +175,10 @@ pub enum CoreEffect {
 pub enum CoreRequest<'a> {
     Protocol {
         route: TransportRoute,
-        data: &'a [u8],
+        request: proto::ReqData,
+    },
+    ProtocolError {
+        route: TransportRoute,
     },
     Local(LocalRequest<'a>),
     Fido {
@@ -241,22 +245,12 @@ impl<P> Drop for WalletApp<P> {
 }
 
 pub struct WalletRuntime<P> {
-    uart_parser: FrameParser,
-    bluetooth_parser: FrameParser,
-    bluetooth_session: u32,
-    uart_busy_notified: bool,
-    bluetooth_busy_session: Option<u32>,
     app: WalletApp<P>,
 }
 
 impl<P: WalletPlatform> WalletRuntime<P> {
     pub fn new(platform: P) -> Self {
         Self {
-            uart_parser: FrameParser::new(),
-            bluetooth_parser: FrameParser::new(),
-            bluetooth_session: 0,
-            uart_busy_notified: false,
-            bluetooth_busy_session: None,
             app: WalletApp::new(platform),
         }
     }
@@ -270,69 +264,18 @@ impl<P: WalletPlatform> WalletRuntime<P> {
     }
 
     pub fn handle(&mut self, request: CoreRequest<'_>) -> Vec<CoreEffect> {
-        let was_busy = self.app.is_busy();
-        let effects = match request {
-            CoreRequest::Protocol { route, data } => {
-                let parser = match route.transport {
-                    Transport::Uart => &mut self.uart_parser,
-                    Transport::Bluetooth => {
-                        if self.bluetooth_session != route.session_id {
-                            self.bluetooth_parser.clear();
-                            self.bluetooth_session = route.session_id;
-                        }
-                        &mut self.bluetooth_parser
-                    }
-                };
-
-                if self.app.is_busy() {
-                    parser.clear();
-                    let notify = match route.transport {
-                        Transport::Uart => {
-                            let notify = !self.uart_busy_notified;
-                            self.uart_busy_notified = true;
-                            notify
-                        }
-                        Transport::Bluetooth => {
-                            let notify = self.bluetooth_busy_session != Some(route.session_id);
-                            self.bluetooth_busy_session = Some(route.session_id);
-                            notify
-                        }
-                    };
-                    if notify {
-                        self.app
-                            .transport_error_output(route, proto::AppError::Busy)
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    parser.push(data);
-                    let mut effects = Vec::new();
-                    while let Some(request) = parser.unpack() {
-                        match request {
-                            Ok(request) => effects.extend(self.app.handle_protocol(route, request)),
-                            Err(_) => effects.push(WalletApp::<P>::transport_error(
-                                route,
-                                proto::AppError::Failed,
-                            )),
-                        }
-                        if self.app.is_busy() {
-                            parser.clear();
-                            break;
-                        }
-                    }
-                    effects
-                }
-            }
+        match request {
+            CoreRequest::Protocol { route, request: _ } if self.app.is_busy() => self
+                .app
+                .transport_error_output(route, proto::AppError::Busy),
+            CoreRequest::Protocol { route, request } => self.app.handle_protocol(route, request),
+            CoreRequest::ProtocolError { route } => self
+                .app
+                .transport_error_output(route, proto::AppError::Failed),
             CoreRequest::Local(request) => self.app.handle_local(request),
             CoreRequest::Fido { id, request } => self.app.handle_fido(id, request),
             CoreRequest::Confirm { id, choice } => self.app.handle_confirmation(id, choice),
-        };
-
-        if was_busy && !self.app.is_busy() {
-            self.uart_busy_notified = false;
-            self.bluetooth_busy_session = None;
         }
-        effects
     }
 }
 
@@ -487,12 +430,13 @@ impl<P: WalletPlatform> WalletApp<P> {
             FidoRequest::Validate {
                 credential_id,
                 rp_id_hash,
-            } => self.handle_fido_credential(id, credential_id, rp_id_hash, None),
+            } => self.handle_fido_credential(id, credential_id, rp_id_hash, None, false),
             FidoRequest::Sign {
                 credential_id,
                 rp_id_hash,
                 hash,
-            } => self.handle_fido_credential(id, credential_id, rp_id_hash, Some(hash)),
+                preflight,
+            } => self.handle_fido_credential(id, credential_id, rp_id_hash, Some(hash), preflight),
             FidoRequest::Confirm {
                 operation,
                 rp_id,
@@ -1037,38 +981,64 @@ impl<P: WalletPlatform> WalletApp<P> {
         credential_id: &[u8],
         rp_id_hash: &[u8],
         hash: Option<&[u8]>,
+        preflight: bool,
     ) -> Vec<CoreEffect> {
         if self.locked {
             return vec![Self::fido(id, Self::fido_error())];
         }
 
         if let Some(hash) = hash {
-            let Some(pending) = self.authorized_fido.take().filter(|pending| {
-                matches!(
-                    &pending.review,
-                    ConfirmationDetails::Fido(details)
-                        if details.operation == FidoOperation::Authenticate
-                )
-            }) else {
-                return vec![Self::fido(id, Self::fido_error())];
+            let pending = if preflight {
+                None
+            } else {
+                let Some(pending) = self.authorized_fido.take().filter(|pending| {
+                    matches!(
+                        &pending.review,
+                        ConfirmationDetails::Fido(details)
+                            if details.operation == FidoOperation::Authenticate
+                    )
+                }) else {
+                    return vec![Self::fido(id, Self::fido_error())];
+                };
+                Some(pending)
             };
-            let ConfirmationDetails::Fido(details) = &pending.review else {
-                unreachable!();
-            };
-            let Ok(displayed_hash) = crypto::Hash::sha256(details.rp_id.as_bytes()) else {
-                return vec![Self::fido(id, Self::fido_error())];
-            };
-            if displayed_hash != rp_id_hash {
-                return vec![Self::fido(id, Self::fido_error())];
+
+            if let Some(pending) = pending.as_ref() {
+                let ConfirmationDetails::Fido(details) = &pending.review else {
+                    unreachable!();
+                };
+                let Ok(displayed_hash) = crypto::Hash::sha256(details.rp_id.as_bytes()) else {
+                    return vec![Self::fido(id, Self::fido_error())];
+                };
+                if displayed_hash != rp_id_hash {
+                    return vec![Self::fido(id, Self::fido_error())];
+                }
             }
+
             let result = self
                 .load_seed()
-                .and_then(|seed| oskey_chain::fido::sign(&seed, credential_id, rp_id_hash, hash))
-                .map(|signature| PreparedResult {
-                    signature: signature.to_vec(),
-                    ..Default::default()
-                });
-            return self.start_fido_result_confirmation(id, pending, result);
+                .and_then(|seed| oskey_chain::fido::sign(&seed, credential_id, rp_id_hash, hash));
+            if let Some(pending) = pending {
+                return self.start_fido_result_confirmation(
+                    id,
+                    pending,
+                    result.map(|signature| PreparedResult {
+                        signature,
+                        ..Default::default()
+                    }),
+                );
+            }
+            return vec![Self::fido(
+                id,
+                result.map_or_else(
+                    |_| Self::fido_error(),
+                    |signature| FidoOutput {
+                        status: FidoStatus::Success,
+                        credential_id: Vec::new(),
+                        data: signature,
+                    },
+                ),
+            )];
         }
 
         let result = self
@@ -1445,13 +1415,10 @@ mod tests {
         fn restart(&self) {}
     }
 
-    fn frame(payload: req_data::Payload) -> Vec<u8> {
-        FrameParser::pack(
-            &proto::ReqData {
-                payload: Some(payload),
-            }
-            .encode_to_vec(),
-        )
+    fn protocol_request(payload: req_data::Payload) -> proto::ReqData {
+        proto::ReqData {
+            payload: Some(payload),
+        }
     }
 
     fn init(runtime: &mut WalletRuntime<TestPlatform>) {
@@ -1467,7 +1434,7 @@ mod tests {
     fn protocol(
         runtime: &mut WalletRuntime<TestPlatform>,
         transport: Transport,
-        data: &[u8],
+        request: &proto::ReqData,
     ) -> Vec<CoreEffect> {
         runtime.handle(CoreRequest::Protocol {
             route: TransportRoute {
@@ -1478,7 +1445,7 @@ mod tests {
                     0
                 },
             },
-            data,
+            request: request.clone(),
         })
     }
 
@@ -1543,7 +1510,7 @@ mod tests {
     #[test]
     fn version_replies_to_origin() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        let request = frame(req_data::Payload::VersionRequest(proto::VersionRequest {}));
+        let request = protocol_request(req_data::Payload::VersionRequest(proto::VersionRequest {}));
         let outputs = protocol(&mut runtime, Transport::Bluetooth, &request);
         assert!(matches!(
             outputs.as_slice(),
@@ -1568,7 +1535,7 @@ mod tests {
         let version = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(req_data::Payload::VersionRequest(proto::VersionRequest {})),
+            &protocol_request(req_data::Payload::VersionRequest(proto::VersionRequest {})),
         );
         let [CoreEffect::Transport(
             _,
@@ -1603,7 +1570,7 @@ mod tests {
             protocol(
                 &mut runtime,
                 Transport::Uart,
-                &frame(req_data::Payload::InitRequest(proto::InitWalletRequest {
+                &protocol_request(req_data::Payload::InitRequest(proto::InitWalletRequest {
                     length: 12,
                     password: String::new(),
                     seed: None,
@@ -1641,7 +1608,7 @@ mod tests {
             protocol(
                 &mut runtime,
                 Transport::Uart,
-                &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                &protocol_request(req_data::Payload::UnlockRequest(proto::UnlockRequest {
                     hash: vec![0; 32],
                 })),
             )
@@ -1664,79 +1631,6 @@ mod tests {
 
         assert_eq!(runtime.state(), WalletState::Locked);
         assert_eq!(runtime.app.failed_unlocks, 0);
-    }
-
-    #[test]
-    fn protocol_parser_keeps_fragment_state() {
-        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        let request = frame(req_data::Payload::VersionRequest(proto::VersionRequest {}));
-        let (first, second) = request.split_at(3);
-
-        assert!(protocol(&mut runtime, Transport::Uart, first).is_empty());
-        assert!(matches!(
-            protocol(&mut runtime, Transport::Bluetooth, &request).as_slice(),
-            [CoreEffect::Transport(
-                TransportRoute {
-                    transport: Transport::Bluetooth,
-                    session_id: 7
-                },
-                _
-            )]
-        ));
-        assert!(matches!(
-            protocol(&mut runtime, Transport::Uart, second).as_slice(),
-            [CoreEffect::Transport(
-                TransportRoute {
-                    transport: Transport::Uart,
-                    session_id: 0
-                },
-                _
-            )]
-        ));
-    }
-
-    #[test]
-    fn bluetooth_parser_does_not_cross_sessions() {
-        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        let request = frame(req_data::Payload::VersionRequest(proto::VersionRequest {}));
-        let (first, second) = request.split_at(3);
-
-        assert!(runtime
-            .handle(CoreRequest::Protocol {
-                route: TransportRoute {
-                    transport: Transport::Bluetooth,
-                    session_id: 7,
-                },
-                data: first,
-            })
-            .is_empty());
-        assert!(runtime
-            .handle(CoreRequest::Protocol {
-                route: TransportRoute {
-                    transport: Transport::Bluetooth,
-                    session_id: 8,
-                },
-                data: second,
-            })
-            .is_empty());
-        assert!(matches!(
-            runtime
-                .handle(CoreRequest::Protocol {
-                    route: TransportRoute {
-                        transport: Transport::Bluetooth,
-                        session_id: 8,
-                    },
-                    data: &request,
-                })
-                .as_slice(),
-            [CoreEffect::Transport(
-                TransportRoute {
-                    transport: Transport::Bluetooth,
-                    session_id: 8
-                },
-                _
-            )]
-        ));
     }
 
     #[test]
@@ -1778,7 +1672,7 @@ mod tests {
             let outputs = protocol(
                 &mut runtime,
                 Transport::Uart,
-                &frame(req_data::Payload::InitRequest(proto::InitWalletRequest {
+                &protocol_request(req_data::Payload::InitRequest(proto::InitWalletRequest {
                     length,
                     password: String::new(),
                     seed: None,
@@ -1833,7 +1727,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(req_data::Payload::InitRequest(proto::InitWalletRequest {
+            &protocol_request(req_data::Payload::InitRequest(proto::InitWalletRequest {
                 length: 12,
                 password: String::new(),
                 seed: None,
@@ -1890,7 +1784,7 @@ mod tests {
             }),
         ] {
             assert!(matches!(
-                protocol(&mut runtime, Transport::Uart, &frame(payload)).as_slice(),
+                protocol(&mut runtime, Transport::Uart, &protocol_request(payload)).as_slice(),
                 [CoreEffect::Transport(
                     _,
                     proto::ResData {
@@ -1926,7 +1820,7 @@ mod tests {
             protocol(
                 &mut runtime,
                 Transport::Uart,
-                &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                &protocol_request(req_data::Payload::UnlockRequest(proto::UnlockRequest {
                     hash: vec![0; 32],
                 })),
             )
@@ -1987,7 +1881,7 @@ mod tests {
         let output = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+            &protocol_request(req_data::Payload::UnlockRequest(proto::UnlockRequest {
                 hash: Vec::new(),
             })),
         );
@@ -2016,7 +1910,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+            &protocol_request(req_data::Payload::UnlockRequest(proto::UnlockRequest {
                 hash: hash.to_vec(),
             })),
         );
@@ -2140,7 +2034,7 @@ mod tests {
         let external_platform = TestPlatform::new(false);
         init(&mut WalletRuntime::new(external_platform.clone()));
         let mut external = WalletRuntime::new(external_platform.clone());
-        let wrong_pin = frame(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+        let wrong_pin = protocol_request(req_data::Payload::UnlockRequest(proto::UnlockRequest {
             hash: vec![1; 32],
         }));
 
@@ -2173,7 +2067,7 @@ mod tests {
             protocol(
                 &mut setup,
                 Transport::Uart,
-                &frame(req_data::Payload::LockRequest(proto::LockRequest {})),
+                &protocol_request(req_data::Payload::LockRequest(proto::LockRequest {})),
             )
             .as_slice(),
             [
@@ -2223,7 +2117,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Bluetooth,
-            &frame(sign_request("hello".into())),
+            &protocol_request(sign_request("hello".into())),
         );
         assert!(matches!(
             outputs.as_slice(),
@@ -2326,7 +2220,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(req_data::Payload::SignEthRequest(request)),
+            &protocol_request(req_data::Payload::SignEthRequest(request)),
         );
 
         assert!(matches!(
@@ -2352,7 +2246,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(req_data::Payload::SignEthRequest(request)),
+            &protocol_request(req_data::Payload::SignEthRequest(request)),
         );
 
         assert!(matches!(
@@ -2372,7 +2266,11 @@ mod tests {
         init(&mut runtime);
         runtime.app.platform.seed_read_fails = true;
 
-        let requested = protocol(&mut runtime, Transport::Uart, &frame(transaction_request()));
+        let requested = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &protocol_request(transaction_request()),
+        );
         let first_id = required_id(&requested);
         let Some((ConfirmationDetails::EthTransaction(transaction), prepared)) =
             runtime.confirmation(first_id)
@@ -2408,7 +2306,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(sign_request("hello".into())),
+            &protocol_request(sign_request("hello".into())),
         );
         let id = outputs
             .iter()
@@ -2442,7 +2340,7 @@ mod tests {
         let pending = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(sign_request("hello".into())),
+            &protocol_request(sign_request("hello".into())),
         );
         let confirmation_id = pending
             .iter()
@@ -2452,7 +2350,7 @@ mod tests {
             })
             .unwrap();
 
-        let status = frame(req_data::Payload::StatusRequest(proto::StatusRequest {}));
+        let status = protocol_request(req_data::Payload::StatusRequest(proto::StatusRequest {}));
         let outputs = protocol(&mut runtime, Transport::Uart, &status);
         let [CoreEffect::Transport(
             _,
@@ -2464,13 +2362,21 @@ mod tests {
             panic!("expected busy response");
         };
         assert_eq!(error.code, proto::AppError::Busy as i32);
-        assert!(protocol(&mut runtime, Transport::Uart, &status).is_empty());
+        assert!(matches!(
+            protocol(&mut runtime, Transport::Uart, &status).as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(error)),
+                },
+            )] if error.code == proto::AppError::Busy as i32
+        ));
 
         confirm(&mut runtime, confirmation_id, ConfirmationChoice::Reject);
         let pending = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(sign_request("again".into())),
+            &protocol_request(sign_request("again".into())),
         );
         assert!(pending
             .iter()
@@ -2481,82 +2387,6 @@ mod tests {
                 _,
                 proto::ResData {
                     payload: Some(res_data::Payload::ErrorResponse(_))
-                }
-            )]
-        ));
-    }
-
-    #[test]
-    fn entering_busy_discards_later_frames_in_the_same_chunk() {
-        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        init(&mut runtime);
-
-        let mut requests = frame(sign_request("hello".into()));
-        requests.extend(frame(req_data::Payload::LockRequest(proto::LockRequest {})));
-        let outputs = protocol(&mut runtime, Transport::Uart, &requests);
-        let confirmation_id = outputs
-            .iter()
-            .find_map(|effect| match effect {
-                CoreEffect::ConfirmationRequired(id) => Some(*id),
-                _ => None,
-            })
-            .unwrap();
-
-        assert_eq!(runtime.state(), WalletState::Busy);
-        confirm(&mut runtime, confirmation_id, ConfirmationChoice::Reject);
-        assert_eq!(runtime.state(), WalletState::Ready);
-        assert!(matches!(
-            protocol(
-                &mut runtime,
-                Transport::Uart,
-                &frame(req_data::Payload::StatusRequest(proto::StatusRequest {})),
-            )
-            .as_slice(),
-            [CoreEffect::Transport(
-                _,
-                proto::ResData {
-                    payload: Some(res_data::Payload::StatusResponse(_))
-                }
-            )]
-        ));
-    }
-
-    #[test]
-    fn pending_confirmation_discards_partial_frames() {
-        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
-        init(&mut runtime);
-        let outputs = protocol(
-            &mut runtime,
-            Transport::Uart,
-            &frame(sign_request("hello".into())),
-        );
-        let id = outputs
-            .iter()
-            .find_map(|output| match output {
-                CoreEffect::ConfirmationRequired(id) => Some(*id),
-                _ => None,
-            })
-            .unwrap();
-        let status = frame(req_data::Payload::StatusRequest(proto::StatusRequest {}));
-        let middle = status.len() / 2;
-
-        assert!(matches!(
-            protocol(&mut runtime, Transport::Uart, &status[..middle]).as_slice(),
-            [CoreEffect::Transport(
-                _,
-                proto::ResData {
-                    payload: Some(res_data::Payload::ErrorResponse(_))
-                }
-            )]
-        ));
-        confirm(&mut runtime, id, ConfirmationChoice::Reject);
-        assert!(protocol(&mut runtime, Transport::Uart, &status[middle..]).is_empty());
-        assert!(matches!(
-            protocol(&mut runtime, Transport::Uart, &status).as_slice(),
-            [CoreEffect::Transport(
-                _,
-                proto::ResData {
-                    payload: Some(res_data::Payload::StatusResponse(_))
                 }
             )]
         ));
@@ -2638,7 +2468,7 @@ mod tests {
             protocol(
                 &mut runtime,
                 Transport::Uart,
-                &frame(req_data::Payload::StatusRequest(proto::StatusRequest {})),
+                &protocol_request(req_data::Payload::StatusRequest(proto::StatusRequest {})),
             )
             .as_slice(),
             [CoreEffect::Transport(
@@ -2716,9 +2546,32 @@ mod tests {
         ));
 
         runtime.app.platform.seed_read_fails = false;
-        let presence = fido(
+        let rp_id_hash = crypto::Hash::sha256(b"ssh:").unwrap();
+        let preflight = fido(
             &mut runtime,
             12,
+            FidoRequest::Sign {
+                credential_id: &credential_id,
+                rp_id_hash: &rp_id_hash,
+                hash: &[8; 32],
+                preflight: true,
+            },
+        );
+        assert!(matches!(
+            preflight.as_slice(),
+            [CoreEffect::Fido {
+                id: 12,
+                result: FidoOutput {
+                    status: FidoStatus::Success,
+                    data,
+                    ..
+                }
+            }] if !data.is_empty()
+        ));
+
+        let presence = fido(
+            &mut runtime,
+            13,
             FidoRequest::Confirm {
                 operation: FidoOperation::Authenticate,
                 rp_id: b"ssh:",
@@ -2728,15 +2581,15 @@ mod tests {
         let presence_id = required_id(&presence);
         confirm(&mut runtime, presence_id, ConfirmationChoice::Approve);
 
-        let rp_id_hash = crypto::Hash::sha256(b"ssh:").unwrap();
         let signing_hash = [9; 32];
         let signing = fido(
             &mut runtime,
-            13,
+            14,
             FidoRequest::Sign {
                 credential_id: &credential_id,
                 rp_id_hash: &rp_id_hash,
                 hash: &signing_hash,
+                preflight: false,
             },
         );
         let signing_id = required_id(&signing);
@@ -2749,7 +2602,7 @@ mod tests {
         assert!(matches!(
             confirm(&mut runtime, signing_id, ConfirmationChoice::Approve).first(),
             Some(CoreEffect::Fido {
-                id: 13,
+                id: 14,
                 result: FidoOutput {
                     status: FidoStatus::Success,
                     data,
@@ -2782,6 +2635,7 @@ mod tests {
                 credential_id: &[0; oskey_chain::fido::CREDENTIAL_ID_SIZE],
                 rp_id_hash: &crypto::Hash::sha256(b"other.example").unwrap(),
                 hash: &[0; 32],
+                preflight: false,
             },
         );
         assert!(matches!(
@@ -2843,7 +2697,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(sign_request("hello".into())),
+            &protocol_request(sign_request("hello".into())),
         );
         let id = outputs
             .iter()
@@ -2910,7 +2764,7 @@ mod tests {
         let outputs = protocol(
             &mut runtime,
             Transport::Uart,
-            &frame(sign_request("a".repeat(8192))),
+            &protocol_request(sign_request("a".repeat(8192))),
         );
         let id = outputs
             .iter()
