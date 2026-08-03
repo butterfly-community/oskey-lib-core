@@ -8,7 +8,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
-use oskey_chain::eth::{Eip2930Transaction, OSKeyTxEip2930};
+use oskey_chain::eth::{Eip2930Transaction, OSKeyTxEip191, OSKeyTxEip2930};
 pub use oskey_chain::{ConfirmationDetails, FidoOperation};
 use oskey_protocol::proto::{req_data, res_data};
 pub use oskey_protocol::{proto, FrameParser, Message};
@@ -17,7 +17,8 @@ use oskey_wallet::path::DerivationPath;
 use oskey_wallet::{mnemonic, wallets};
 use zeroize::{Zeroize, Zeroizing};
 
-use confirmation::ConfirmationService;
+pub use confirmation::PreparedResult;
+use confirmation::{ConfirmationService, PendingConfirmation};
 
 const PIN_SALT: &[u8] = b"&%OSKey1$!@";
 const MAX_FAILED_UNLOCKS: u8 = 10;
@@ -204,13 +205,9 @@ pub trait WalletPlatform {
 
 struct PendingSign {
     id: i32,
-    path: DerivationPath,
-    hash: [u8; 32],
-    public_key: Vec<u8>,
     reply_to: TransportRoute,
 }
 
-#[allow(clippy::large_enum_variant)]
 enum PendingAction {
     Sign(PendingSign),
     Fido(u32),
@@ -234,6 +231,7 @@ struct WalletApp<P> {
     failed_unlocks: u8,
     storage_failed: bool,
     confirmation: ConfirmationService<PendingAction>,
+    authorized_fido: Option<PendingConfirmation<PendingAction>>,
 }
 
 impl<P> Drop for WalletApp<P> {
@@ -267,8 +265,8 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         self.app.state()
     }
 
-    pub fn confirmation(&self, id: u32) -> Option<&ConfirmationDetails> {
-        self.app.confirmation.details(id)
+    pub fn confirmation(&self, id: u32) -> Option<(&ConfirmationDetails, Option<&PreparedResult>)> {
+        self.app.confirmation.get(id)
     }
 
     pub fn handle(&mut self, request: CoreRequest<'_>) -> Vec<CoreEffect> {
@@ -365,6 +363,7 @@ impl<P: WalletPlatform> WalletApp<P> {
             failed_unlocks,
             storage_failed,
             confirmation: ConfirmationService::new(),
+            authorized_fido: None,
         }
     }
 
@@ -508,43 +507,135 @@ impl<P: WalletPlatform> WalletApp<P> {
             return Vec::new();
         };
 
-        let mut outputs = match pending.action {
-            PendingAction::Sign(pending) => match choice {
-                ConfirmationChoice::Approve => {
-                    let reply_to = pending.reply_to;
-                    match self.sign(pending) {
-                        Ok(payload) => vec![Self::transport(reply_to, payload)],
-                        Err(_) => vec![Self::transport_error(reply_to, proto::AppError::Failed)],
-                    }
-                }
-                ConfirmationChoice::Reject => vec![Self::transport_error(
-                    pending.reply_to,
-                    proto::AppError::Rejected,
-                )],
-            },
-            PendingAction::Fido(request_id) => vec![Self::fido(
-                request_id,
-                FidoOutput {
-                    status: if choice == ConfirmationChoice::Approve {
-                        FidoStatus::Success
-                    } else {
-                        FidoStatus::Failed
-                    },
-                    credential_id: Vec::new(),
-                    data: Vec::new(),
-                },
-            )],
-        };
-
-        outputs.push(CoreEffect::ConfirmationCompleted {
+        let mut outputs = vec![CoreEffect::ConfirmationCompleted {
             id,
             outcome: match choice {
                 ConfirmationChoice::Approve => ConfirmationOutcome::Approved,
                 ConfirmationChoice::Reject => ConfirmationOutcome::Rejected,
             },
-        });
+        }];
+        if matches!(&pending.action, PendingAction::Sign(_)) {
+            self.finish_sign_confirmation(pending, choice, &mut outputs);
+        } else {
+            self.finish_fido_confirmation(pending, choice, &mut outputs);
+        }
+
         outputs.push(CoreEffect::WalletState(self.state()));
         outputs
+    }
+
+    fn finish_sign_confirmation(
+        &mut self,
+        mut pending: PendingConfirmation<PendingAction>,
+        choice: ConfirmationChoice,
+        outputs: &mut Vec<CoreEffect>,
+    ) {
+        let PendingAction::Sign(sign) = &pending.action else {
+            unreachable!();
+        };
+        if choice == ConfirmationChoice::Reject {
+            outputs.insert(
+                0,
+                Self::transport_error(sign.reply_to, proto::AppError::Rejected),
+            );
+            return;
+        }
+
+        if pending.prepared.is_none() {
+            let Ok(prepared) = self.prepare_signature(&pending.review) else {
+                outputs.insert(
+                    0,
+                    Self::transport_error(sign.reply_to, proto::AppError::Failed),
+                );
+                return;
+            };
+            pending.prepared = Some(prepared);
+            let next_id = self
+                .confirmation
+                .resume(pending)
+                .expect("the completed confirmation released the service");
+            outputs.push(CoreEffect::ConfirmationRequired(next_id));
+            return;
+        }
+
+        let PendingAction::Sign(sign) = pending.action else {
+            unreachable!();
+        };
+        let signing_hash = match pending.review {
+            ConfirmationDetails::EthMessage(details) => details.signing_hash,
+            ConfirmationDetails::EthTransaction(details) => details.signing_hash,
+            ConfirmationDetails::Fido(_) => unreachable!(),
+        };
+        let prepared = pending.prepared.expect("prepared result was checked above");
+        outputs.insert(
+            0,
+            Self::transport(
+                sign.reply_to,
+                res_data::Payload::SignResponse(proto::SignResponse {
+                    id: sign.id,
+                    message: Vec::new(),
+                    public_key: prepared.public_key,
+                    pre_hash: signing_hash.to_vec(),
+                    signature: prepared.signature,
+                    recovery_id: None,
+                }),
+            ),
+        );
+    }
+
+    fn finish_fido_confirmation(
+        &mut self,
+        mut pending: PendingConfirmation<PendingAction>,
+        choice: ConfirmationChoice,
+        outputs: &mut Vec<CoreEffect>,
+    ) {
+        let PendingAction::Fido(request_id) = &pending.action else {
+            unreachable!();
+        };
+        let request_id = *request_id;
+        let ConfirmationDetails::Fido(details) = &pending.review else {
+            unreachable!();
+        };
+        if choice == ConfirmationChoice::Reject {
+            outputs.insert(0, Self::fido(request_id, Self::fido_error()));
+        } else if matches!(
+            details.operation,
+            FidoOperation::Register | FidoOperation::Authenticate
+        ) && pending.prepared.is_none()
+        {
+            self.authorized_fido = Some(pending);
+            outputs.insert(
+                0,
+                Self::fido(
+                    request_id,
+                    FidoOutput {
+                        status: FidoStatus::Success,
+                        credential_id: Vec::new(),
+                        data: Vec::new(),
+                    },
+                ),
+            );
+        } else {
+            let prepared = pending.prepared.take().unwrap_or_default();
+            let output = match details.operation {
+                FidoOperation::Register => FidoOutput {
+                    status: FidoStatus::Success,
+                    credential_id: prepared.credential_id,
+                    data: prepared.public_key,
+                },
+                FidoOperation::Authenticate => FidoOutput {
+                    status: FidoStatus::Success,
+                    credential_id: Vec::new(),
+                    data: prepared.signature,
+                },
+                _ => FidoOutput {
+                    status: FidoStatus::Success,
+                    credential_id: Vec::new(),
+                    data: Vec::new(),
+                },
+            };
+            outputs.insert(0, Self::fido(request_id, output));
+        }
     }
 
     fn status_response(&self) -> res_data::Payload {
@@ -873,6 +964,7 @@ impl<P: WalletPlatform> WalletApp<P> {
             Ok(details) => ConfirmationDetails::Fido(details),
             Err(_) => return vec![Self::fido(request_id, Self::fido_error())],
         };
+        self.authorized_fido = None;
         let Some(id) = self
             .confirmation
             .start(PendingAction::Fido(request_id), details)
@@ -906,12 +998,22 @@ impl<P: WalletPlatform> WalletApp<P> {
         ]
     }
 
-    fn handle_fido_register(&self, id: u32, rp_id: &str, cred_protect: u8) -> Vec<CoreEffect> {
+    fn handle_fido_register(&mut self, id: u32, rp_id: &str, cred_protect: u8) -> Vec<CoreEffect> {
         if self.locked {
             return vec![Self::fido(id, Self::fido_error())];
         }
 
-        let result: Result<FidoOutput> = (|| {
+        let Some(pending) = self.authorized_fido.take().filter(|pending| {
+            matches!(
+                &pending.review,
+                ConfirmationDetails::Fido(details)
+                    if details.operation == FidoOperation::Register && details.rp_id == rp_id
+            )
+        }) else {
+            return vec![Self::fido(id, Self::fido_error())];
+        };
+
+        let result: Result<PreparedResult> = (|| {
             let nonce = self.platform.random(oskey_chain::fido::NONCE_SIZE);
             let credential = oskey_chain::fido::create(
                 &self.load_seed()?,
@@ -919,21 +1021,18 @@ impl<P: WalletPlatform> WalletApp<P> {
                 nonce.as_slice().try_into()?,
                 cred_protect,
             )?;
-            Ok(FidoOutput {
-                status: FidoStatus::Success,
+            Ok(PreparedResult {
                 credential_id: credential.id.to_vec(),
-                data: credential.public_key.to_vec(),
+                public_key: credential.public_key.to_vec(),
+                ..Default::default()
             })
         })();
 
-        vec![Self::fido(
-            id,
-            result.unwrap_or_else(|_| Self::fido_error()),
-        )]
+        self.start_fido_result_confirmation(id, pending, result)
     }
 
     fn handle_fido_credential(
-        &self,
+        &mut self,
         id: u32,
         credential_id: &[u8],
         rp_id_hash: &[u8],
@@ -943,27 +1042,69 @@ impl<P: WalletPlatform> WalletApp<P> {
             return vec![Self::fido(id, Self::fido_error())];
         }
 
-        let result: Result<Vec<u8>> = self.load_seed().and_then(|seed| {
-            if let Some(hash) = hash {
-                oskey_chain::fido::sign(&seed, credential_id, rp_id_hash, hash)
-                    .map(|signature| signature.to_vec())
-            } else {
-                oskey_chain::fido::validate(&seed, credential_id, rp_id_hash)
-                    .map(|cred_protect| vec![cred_protect])
+        if let Some(hash) = hash {
+            let Some(pending) = self.authorized_fido.take().filter(|pending| {
+                matches!(
+                    &pending.review,
+                    ConfirmationDetails::Fido(details)
+                        if details.operation == FidoOperation::Authenticate
+                )
+            }) else {
+                return vec![Self::fido(id, Self::fido_error())];
+            };
+            let ConfirmationDetails::Fido(details) = &pending.review else {
+                unreachable!();
+            };
+            let Ok(displayed_hash) = crypto::Hash::sha256(details.rp_id.as_bytes()) else {
+                return vec![Self::fido(id, Self::fido_error())];
+            };
+            if displayed_hash != rp_id_hash {
+                return vec![Self::fido(id, Self::fido_error())];
             }
-        });
+            let result = self
+                .load_seed()
+                .and_then(|seed| oskey_chain::fido::sign(&seed, credential_id, rp_id_hash, hash))
+                .map(|signature| PreparedResult {
+                    signature: signature.to_vec(),
+                    ..Default::default()
+                });
+            return self.start_fido_result_confirmation(id, pending, result);
+        }
 
+        let result = self
+            .load_seed()
+            .and_then(|seed| oskey_chain::fido::validate(&seed, credential_id, rp_id_hash));
         vec![Self::fido(
             id,
-            match result {
-                Ok(data) => FidoOutput {
+            result.map_or_else(
+                |_| Self::fido_error(),
+                |cred_protect| FidoOutput {
                     status: FidoStatus::Success,
                     credential_id: Vec::new(),
-                    data,
+                    data: vec![cred_protect],
                 },
-                Err(_) => Self::fido_error(),
-            },
+            ),
         )]
+    }
+
+    fn start_fido_result_confirmation(
+        &mut self,
+        request_id: u32,
+        mut pending: PendingConfirmation<PendingAction>,
+        result: Result<PreparedResult>,
+    ) -> Vec<CoreEffect> {
+        let Ok(prepared) = result else {
+            return vec![Self::fido(request_id, Self::fido_error())];
+        };
+        pending.action = PendingAction::Fido(request_id);
+        pending.prepared = Some(prepared);
+        let Some(id) = self.confirmation.resume(pending) else {
+            return vec![Self::fido(request_id, Self::fido_error())];
+        };
+        vec![
+            CoreEffect::ConfirmationRequired(id),
+            CoreEffect::WalletState(WalletState::Busy),
+        ]
     }
 
     fn prepare_sign(
@@ -972,18 +1113,10 @@ impl<P: WalletPlatform> WalletApp<P> {
         request: proto::SignEthRequest,
     ) -> Result<(PendingSign, ConfirmationDetails)> {
         let proto::SignEthRequest { id, path, tx, .. } = request;
-        let path: DerivationPath = path.parse()?;
+        path.parse::<DerivationPath>()?;
         let tx = tx.ok_or_else(|| anyhow!("Transaction data is missing"))?;
-        let public_key = wallets::ExtendedPrivKey::derive(
-            &self.load_seed()?,
-            path.clone(),
-            wallets::Curve::K256,
-        )?
-        .export_pk()?
-        .to_vec();
-        let from = oskey_chain::eth::OSKeyTxEip191::address(&public_key)?;
 
-        let (hash, details) = match tx {
+        let details = match tx {
             proto::sign_eth_request::Tx::Eip2930(transaction) => {
                 if transaction
                     .access_list
@@ -1001,52 +1134,47 @@ impl<P: WalletPlatform> WalletApp<P> {
                     value: transaction.value,
                     input: transaction.input.unwrap_or_default(),
                 })?;
-                let hash = transaction.hash();
-                let details =
-                    ConfirmationDetails::EthTransaction(transaction.confirmation(&hash, from));
-                (hash, details)
+                ConfirmationDetails::EthTransaction(transaction.confirmation(path))
             }
             proto::sign_eth_request::Tx::Eip191(message) => {
                 if message.is_personal == Some(false) {
                     return Err(anyhow!("Non-personal message signing is unsupported"));
                 }
-                let hash =
-                    oskey_chain::eth::OSKeyTxEip191::hash_message(message.message.as_bytes());
-                let details = ConfirmationDetails::EthMessage(
-                    oskey_chain::eth::OSKeyTxEip191::confirmation(&message.message, &hash, from)?,
-                );
-                (hash, details)
+                ConfirmationDetails::EthMessage(OSKeyTxEip191::confirmation(
+                    &message.message,
+                    path,
+                )?)
             }
         };
 
         Ok((
             PendingSign {
                 id,
-                path,
-                hash,
-                public_key,
                 reply_to: route,
             },
             details,
         ))
     }
 
-    fn sign(&self, pending: PendingSign) -> Result<res_data::Payload> {
-        let private_key = wallets::ExtendedPrivKey::derive(
-            &self.load_seed()?,
-            pending.path,
-            wallets::Curve::K256,
-        )?;
-        let signature = private_key.sign(&pending.hash)?;
-
-        Ok(res_data::Payload::SignResponse(proto::SignResponse {
-            id: pending.id,
-            message: Vec::new(),
-            public_key: pending.public_key,
-            pre_hash: pending.hash.to_vec(),
-            signature: signature.to_vec(),
-            recovery_id: None,
-        }))
+    fn prepare_signature(&self, details: &ConfirmationDetails) -> Result<PreparedResult> {
+        let (path, hash) = match details {
+            ConfirmationDetails::EthMessage(details) => {
+                (details.path.parse()?, details.signing_hash)
+            }
+            ConfirmationDetails::EthTransaction(details) => {
+                (details.path.parse()?, details.signing_hash)
+            }
+            ConfirmationDetails::Fido(_) => unreachable!(),
+        };
+        let private_key =
+            wallets::ExtendedPrivKey::derive(&self.load_seed()?, path, wallets::Curve::K256)?;
+        let public_key = private_key.export_pk()?.to_vec();
+        Ok(PreparedResult {
+            from: Some(OSKeyTxEip191::address(&public_key)?),
+            public_key,
+            signature: private_key.sign(&hash)?.to_vec(),
+            ..Default::default()
+        })
     }
 
     fn set_pin_text(&mut self, pin: &str) -> Result<()> {
@@ -1373,6 +1501,16 @@ mod tests {
         runtime.handle(CoreRequest::Confirm { id, choice })
     }
 
+    fn required_id(effects: &[CoreEffect]) -> u32 {
+        effects
+            .iter()
+            .find_map(|effect| match effect {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .expect("confirmation was not requested")
+    }
+
     fn sign_request(message: String) -> req_data::Payload {
         req_data::Payload::SignEthRequest(proto::SignEthRequest {
             id: 1,
@@ -1381,6 +1519,26 @@ mod tests {
                 message,
                 is_personal: None,
             })),
+            debug_text: None,
+        })
+    }
+
+    fn transaction_request() -> req_data::Payload {
+        req_data::Payload::SignEthRequest(proto::SignEthRequest {
+            id: 2,
+            path: "m/44'/60'/0'/0/0".into(),
+            tx: Some(proto::sign_eth_request::Tx::Eip2930(
+                proto::AppEthTxEip2930 {
+                    chain_id: 1,
+                    nonce: 7,
+                    gas_price: "1000000000".into(),
+                    gas_limit: 50000,
+                    to: Some("0x00Ab1EAd740f95aDE25b78B3137fdcC333326e7d".into()),
+                    value: "42".into(),
+                    input: Some(vec![0xa9, 0x05, 0x9c, 0xbb, 1, 2, 3]),
+                    access_list: None,
+                },
+            )),
             debug_text: None,
         })
     }
@@ -2060,9 +2218,10 @@ mod tests {
     }
 
     #[test]
-    fn signing_uses_id_only_event_and_native_details() {
+    fn signing_uses_private_key_only_after_first_confirmation() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
+        runtime.app.platform.seed_read_fails = true;
 
         let outputs = protocol(
             &mut runtime,
@@ -2090,30 +2249,44 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let Some(ConfirmationDetails::EthMessage(details)) = runtime.confirmation(id) else {
+        let Some((ConfirmationDetails::EthMessage(details), prepared)) = runtime.confirmation(id)
+        else {
             panic!("expected Ethereum message confirmation");
         };
-        let confirmation_from = details.from;
         let confirmation_hash = details.signing_hash;
+        assert!(prepared.is_none());
 
-        let completed = confirm(&mut runtime, id, ConfirmationChoice::Approve);
+        runtime.app.platform.seed_read_fails = false;
+        let prepared = confirm(&mut runtime, id, ConfirmationChoice::Approve);
         assert!(matches!(
-            completed.as_slice(),
+            prepared.as_slice(),
             [
-                CoreEffect::Transport(
-                    TransportRoute {
-                        transport: Transport::Bluetooth,
-                        session_id: 7
-                    },
-                    _
-                ),
                 CoreEffect::ConfirmationCompleted {
                     id: completed_id,
                     outcome: ConfirmationOutcome::Approved
                 },
-                CoreEffect::WalletState(WalletState::Ready)
+                CoreEffect::ConfirmationRequired(_),
+                CoreEffect::WalletState(WalletState::Busy)
             ] if *completed_id == id
         ));
+        let prepared_id = prepared
+            .iter()
+            .find_map(|effect| match effect {
+                CoreEffect::ConfirmationRequired(id) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let Some((ConfirmationDetails::EthMessage(_), Some(prepared))) =
+            runtime.confirmation(prepared_id)
+        else {
+            panic!("expected prepared Ethereum message confirmation");
+        };
+        let confirmation_from = prepared.from.unwrap();
+        assert_eq!(prepared.public_key.len(), 65);
+        assert_eq!(prepared.signature.len(), 64);
+
+        runtime.app.platform.seed_read_fails = true;
+        let completed = confirm(&mut runtime, prepared_id, ConfirmationChoice::Approve);
         let CoreEffect::Transport(
             _,
             proto::ResData {
@@ -2129,7 +2302,7 @@ mod tests {
         );
         assert_eq!(response.pre_hash, confirmation_hash);
         assert_eq!(response.signature.len(), 64);
-        assert!(runtime.confirmation(id).is_none());
+        assert!(runtime.confirmation(prepared_id).is_none());
     }
 
     #[test]
@@ -2171,6 +2344,67 @@ mod tests {
     }
 
     #[test]
+    fn invalid_signing_path_is_rejected_before_confirmation() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let req_data::Payload::SignEthRequest(mut request) = sign_request("hello".into()) else {
+            unreachable!();
+        };
+        request.path = "not/a/path".into();
+
+        let outputs = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &frame(req_data::Payload::SignEthRequest(request)),
+        );
+
+        assert!(matches!(
+            outputs.as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(_))
+                }
+            )]
+        ));
+    }
+
+    #[test]
+    fn transaction_confirmation_uses_a_bounded_display_summary() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        runtime.app.platform.seed_read_fails = true;
+
+        let requested = protocol(&mut runtime, Transport::Uart, &frame(transaction_request()));
+        let first_id = required_id(&requested);
+        let Some((ConfirmationDetails::EthTransaction(transaction), prepared)) =
+            runtime.confirmation(first_id)
+        else {
+            panic!("expected Ethereum transaction confirmation");
+        };
+        assert_eq!(transaction.chain_id, 1);
+        assert_eq!(transaction.nonce, 7);
+        assert_eq!(transaction.gas_price, "1000000000");
+        assert_eq!(transaction.gas_limit, 50000);
+        assert_eq!(transaction.value, "42");
+        assert_eq!(transaction.input_length, 7);
+        assert_eq!(transaction.selector, [0xa9, 0x05, 0x9c, 0xbb]);
+        assert!(prepared.is_none());
+
+        runtime.app.platform.seed_read_fails = false;
+        let prepared = confirm(&mut runtime, first_id, ConfirmationChoice::Approve);
+        let second_id = required_id(&prepared);
+        let Some((ConfirmationDetails::EthTransaction(_), Some(prepared))) =
+            runtime.confirmation(second_id)
+        else {
+            panic!("expected prepared Ethereum transaction confirmation");
+        };
+        assert!(prepared.from.is_some());
+        assert_eq!(prepared.public_key.len(), 65);
+        assert_eq!(prepared.signature.len(), 64);
+    }
+
+    #[test]
     fn stale_and_duplicate_confirmation_decisions_are_ignored() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
@@ -2188,7 +2422,19 @@ mod tests {
             .unwrap();
 
         assert!(confirm(&mut runtime, id + 1, ConfirmationChoice::Approve).is_empty());
-        assert!(!confirm(&mut runtime, id, ConfirmationChoice::Reject).is_empty());
+        let rejected = confirm(&mut runtime, id, ConfirmationChoice::Reject);
+        assert!(matches!(
+            rejected.first(),
+            Some(CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::ErrorResponse(proto::ErrorResponse {
+                        code,
+                        ..
+                    })),
+                },
+            )) if *code == proto::AppError::Rejected as i32
+        ));
         assert!(confirm(&mut runtime, id, ConfirmationChoice::Approve).is_empty());
     }
 
@@ -2348,7 +2594,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             runtime.confirmation(id),
-            Some(ConfirmationDetails::Fido(_))
+            Some((ConfirmationDetails::Fido(_), None))
         ));
         assert!(matches!(
             confirm(&mut runtime, id, ConfirmationChoice::Approve).as_slice(),
@@ -2405,6 +2651,192 @@ mod tests {
                 }
             )]
         ));
+    }
+
+    #[test]
+    fn fido_register_and_authenticate_use_two_confirmations() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        runtime.app.platform.seed_read_fails = true;
+
+        let first = fido(
+            &mut runtime,
+            10,
+            FidoRequest::Confirm {
+                operation: FidoOperation::Register,
+                rp_id: b"ssh:",
+                account: b"OSKey",
+            },
+        );
+        let first_id = required_id(&first);
+        assert!(matches!(
+            runtime.confirmation(first_id),
+            Some((ConfirmationDetails::Fido(_), None))
+        ));
+        assert!(matches!(
+            confirm(&mut runtime, first_id, ConfirmationChoice::Approve).first(),
+            Some(CoreEffect::Fido {
+                id: 10,
+                result: FidoOutput {
+                    status: FidoStatus::Success,
+                    ..
+                }
+            })
+        ));
+
+        runtime.app.platform.seed_read_fails = false;
+        let registration = fido(
+            &mut runtime,
+            11,
+            FidoRequest::Register {
+                rp_id: "ssh:",
+                cred_protect: 1,
+            },
+        );
+        let registration_id = required_id(&registration);
+        let Some((ConfirmationDetails::Fido(_), Some(prepared))) =
+            runtime.confirmation(registration_id)
+        else {
+            panic!("expected prepared FIDO registration");
+        };
+        let credential_id = &prepared.credential_id;
+        let public_key = &prepared.public_key;
+        assert_eq!(credential_id.len(), oskey_chain::fido::CREDENTIAL_ID_SIZE);
+        assert_eq!(public_key.len(), 65);
+        let credential_id = credential_id.to_vec();
+        runtime.app.platform.seed_read_fails = true;
+        let registered = confirm(&mut runtime, registration_id, ConfirmationChoice::Approve);
+        assert!(matches!(
+            registered.first(),
+            Some(CoreEffect::Fido {
+                id: 11,
+                result: FidoOutput {
+                    status: FidoStatus::Success,
+                    credential_id: result_id,
+                    data,
+                }
+            }) if result_id == &credential_id && data.len() == 65
+        ));
+
+        runtime.app.platform.seed_read_fails = false;
+        let presence = fido(
+            &mut runtime,
+            12,
+            FidoRequest::Confirm {
+                operation: FidoOperation::Authenticate,
+                rp_id: b"ssh:",
+                account: b"OSKey",
+            },
+        );
+        let presence_id = required_id(&presence);
+        confirm(&mut runtime, presence_id, ConfirmationChoice::Approve);
+
+        let rp_id_hash = crypto::Hash::sha256(b"ssh:").unwrap();
+        let signing_hash = [9; 32];
+        let signing = fido(
+            &mut runtime,
+            13,
+            FidoRequest::Sign {
+                credential_id: &credential_id,
+                rp_id_hash: &rp_id_hash,
+                hash: &signing_hash,
+            },
+        );
+        let signing_id = required_id(&signing);
+        assert!(matches!(
+            runtime.confirmation(signing_id),
+            Some((ConfirmationDetails::Fido(_), Some(prepared)))
+                if !prepared.signature.is_empty()
+        ));
+        runtime.app.platform.seed_read_fails = true;
+        assert!(matches!(
+            confirm(&mut runtime, signing_id, ConfirmationChoice::Approve).first(),
+            Some(CoreEffect::Fido {
+                id: 13,
+                result: FidoOutput {
+                    status: FidoStatus::Success,
+                    data,
+                    ..
+                }
+            }) if !data.is_empty()
+        ));
+    }
+
+    #[test]
+    fn fido_sign_rejects_a_service_different_from_the_confirmation() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let presence = fido(
+            &mut runtime,
+            20,
+            FidoRequest::Confirm {
+                operation: FidoOperation::Authenticate,
+                rp_id: b"example.com",
+                account: b"OSKey",
+            },
+        );
+        let id = required_id(&presence);
+        confirm(&mut runtime, id, ConfirmationChoice::Approve);
+
+        let result = fido(
+            &mut runtime,
+            21,
+            FidoRequest::Sign {
+                credential_id: &[0; oskey_chain::fido::CREDENTIAL_ID_SIZE],
+                rp_id_hash: &crypto::Hash::sha256(b"other.example").unwrap(),
+                hash: &[0; 32],
+            },
+        );
+        assert!(matches!(
+            result.as_slice(),
+            [CoreEffect::Fido {
+                id: 21,
+                result: FidoOutput {
+                    status: FidoStatus::Failed,
+                    ..
+                }
+            }]
+        ));
+    }
+
+    #[test]
+    fn fido_rejection_never_releases_a_private_result() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut runtime);
+        let presence = fido(
+            &mut runtime,
+            30,
+            FidoRequest::Confirm {
+                operation: FidoOperation::Register,
+                rp_id: b"ssh:",
+                account: b"OSKey",
+            },
+        );
+        let presence_id = required_id(&presence);
+        confirm(&mut runtime, presence_id, ConfirmationChoice::Approve);
+
+        let registration = fido(
+            &mut runtime,
+            31,
+            FidoRequest::Register {
+                rp_id: "ssh:",
+                cred_protect: 1,
+            },
+        );
+        let registration_id = required_id(&registration);
+        let rejected = confirm(&mut runtime, registration_id, ConfirmationChoice::Reject);
+        assert!(matches!(
+            rejected.first(),
+            Some(CoreEffect::Fido {
+                id: 31,
+                result: FidoOutput {
+                    status: FidoStatus::Failed,
+                    credential_id,
+                    data,
+                }
+            }) if credential_id.is_empty() && data.is_empty()
+        ));
+        assert!(confirm(&mut runtime, registration_id, ConfirmationChoice::Approve).is_empty());
     }
 
     #[test]
@@ -2475,7 +2907,7 @@ mod tests {
     }
 
     #[test]
-    fn large_message_is_released_after_preparing_confirmation() {
+    fn large_message_confirmation_is_bounded() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
         let outputs = protocol(
@@ -2490,11 +2922,12 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let Some(ConfirmationDetails::EthMessage(details)) = runtime.confirmation(id) else {
+        let Some((ConfirmationDetails::EthMessage(details), None)) = runtime.confirmation(id)
+        else {
             panic!("expected message details");
         };
-        assert!(details.truncated);
-        assert_eq!(details.preview.len(), 256);
         assert_eq!(details.byte_length, 8192);
+        assert_eq!(details.preview.len(), 256);
+        assert!(details.truncated);
     }
 }
