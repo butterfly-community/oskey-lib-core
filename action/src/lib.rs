@@ -228,7 +228,7 @@ enum SeedLoadError {
     Storage,
 }
 
-struct WalletApp<P> {
+pub struct WalletRuntime<P> {
     platform: P,
     pin_cache: [u8; 32],
     locked: bool,
@@ -238,49 +238,14 @@ struct WalletApp<P> {
     authorized_fido: Option<PendingConfirmation<PendingAction>>,
 }
 
-impl<P> Drop for WalletApp<P> {
+impl<P> Drop for WalletRuntime<P> {
     fn drop(&mut self) {
         self.pin_cache.zeroize();
     }
 }
 
-pub struct WalletRuntime<P> {
-    app: WalletApp<P>,
-}
-
 impl<P: WalletPlatform> WalletRuntime<P> {
     pub fn new(platform: P) -> Self {
-        Self {
-            app: WalletApp::new(platform),
-        }
-    }
-
-    pub fn state(&self) -> WalletState {
-        self.app.state()
-    }
-
-    pub fn confirmation(&self, id: u32) -> Option<(&ConfirmationDetails, Option<&PreparedResult>)> {
-        self.app.confirmation.get(id)
-    }
-
-    pub fn handle(&mut self, request: CoreRequest<'_>) -> Vec<CoreEffect> {
-        match request {
-            CoreRequest::Protocol { route, request: _ } if self.app.is_busy() => self
-                .app
-                .transport_error_output(route, proto::AppError::Busy),
-            CoreRequest::Protocol { route, request } => self.app.handle_protocol(route, request),
-            CoreRequest::ProtocolError { route } => self
-                .app
-                .transport_error_output(route, proto::AppError::Failed),
-            CoreRequest::Local(request) => self.app.handle_local(request),
-            CoreRequest::Fido { id, request } => self.app.handle_fido(id, request),
-            CoreRequest::Confirm { id, choice } => self.app.handle_confirmation(id, choice),
-        }
-    }
-}
-
-impl<P: WalletPlatform> WalletApp<P> {
-    fn new(platform: P) -> Self {
         let (mut locked, mut failed_unlocks, storage_failed) = match platform.seed_exists() {
             Ok(false) => (false, 0, false),
             Ok(true) => match platform.unlock_failures() {
@@ -310,11 +275,30 @@ impl<P: WalletPlatform> WalletApp<P> {
         }
     }
 
+    pub fn confirmation(&self, id: u32) -> Option<(&ConfirmationDetails, Option<&PreparedResult>)> {
+        self.confirmation.get(id)
+    }
+
+    pub fn handle(&mut self, request: CoreRequest<'_>) -> Vec<CoreEffect> {
+        match request {
+            CoreRequest::Protocol { route, request: _ } if self.is_busy() => {
+                self.transport_error_output(route, proto::AppError::Busy)
+            }
+            CoreRequest::Protocol { route, request } => self.handle_protocol(route, request),
+            CoreRequest::ProtocolError { route } => {
+                self.transport_error_output(route, proto::AppError::Failed)
+            }
+            CoreRequest::Local(request) => self.handle_local(request),
+            CoreRequest::Fido { id, request } => self.handle_fido(id, request),
+            CoreRequest::Confirm { id, choice } => self.handle_confirmation(id, choice),
+        }
+    }
+
     fn is_busy(&self) -> bool {
         self.confirmation.is_waiting()
     }
 
-    fn state(&self) -> WalletState {
+    pub fn state(&self) -> WalletState {
         let Ok(seed_exists) = self.seed_exists() else {
             return WalletState::Disabled;
         };
@@ -415,7 +399,7 @@ impl<P: WalletPlatform> WalletApp<P> {
     }
 
     fn handle_fido(&mut self, id: u32, request: FidoRequest<'_>) -> Vec<CoreEffect> {
-        if self.confirmation.is_waiting() {
+        if self.is_busy() {
             if matches!(request, FidoRequest::CancelConfirmation) {
                 return self.cancel_fido_confirmation(id);
             }
@@ -1630,7 +1614,7 @@ mod tests {
         let runtime = WalletRuntime::new(platform);
 
         assert_eq!(runtime.state(), WalletState::Locked);
-        assert_eq!(runtime.app.failed_unlocks, 0);
+        assert_eq!(runtime.failed_unlocks, 0);
     }
 
     #[test]
@@ -1943,7 +1927,7 @@ mod tests {
         }
 
         let mut restarted = WalletRuntime::new(platform.clone());
-        assert_eq!(restarted.app.failed_unlocks, 3);
+        assert_eq!(restarted.failed_unlocks, 3);
         assert!(matches!(
             restarted
                 .handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")))
@@ -2026,9 +2010,9 @@ mod tests {
             ] if *value == u32::from(MAX_FAILED_UNLOCKS)
         ));
         assert_eq!(local.state(), WalletState::Setup);
-        assert!(!local.app.storage_failed);
-        assert!(!local.app.locked);
-        assert_eq!(local.app.failed_unlocks, 0);
+        assert!(!local.storage_failed);
+        assert!(!local.locked);
+        assert_eq!(local.failed_unlocks, 0);
         assert!(local_platform.seed.borrow().is_empty());
 
         let external_platform = TestPlatform::new(false);
@@ -2054,9 +2038,9 @@ mod tests {
             ] if error.code == proto::AppError::Failed as i32
         ));
         assert_eq!(external.state(), WalletState::Setup);
-        assert!(!external.app.storage_failed);
-        assert!(!external.app.locked);
-        assert_eq!(external.app.failed_unlocks, 0);
+        assert!(!external.storage_failed);
+        assert!(!external.locked);
+        assert_eq!(external.failed_unlocks, 0);
         assert!(external_platform.seed.borrow().is_empty());
     }
 
@@ -2078,20 +2062,20 @@ mod tests {
 
         let mut ready = WalletRuntime::new(TestPlatform::new(true));
         init(&mut ready);
-        assert_ne!(ready.app.pin_cache, [0; 32]);
-        ready.app.storage_failed = true;
-        ready.app.locked = true;
-        ready.app.failed_unlocks = 3;
+        assert_ne!(ready.pin_cache, [0; 32]);
+        ready.storage_failed = true;
+        ready.locked = true;
+        ready.failed_unlocks = 3;
         assert!(matches!(
             ready
                 .handle(CoreRequest::Local(LocalRequest::ResetStorage))
                 .as_slice(),
             [CoreEffect::WalletState(WalletState::Setup)]
         ));
-        assert_eq!(ready.app.pin_cache, [0; 32]);
-        assert!(!ready.app.storage_failed);
-        assert!(!ready.app.locked);
-        assert_eq!(ready.app.failed_unlocks, 0);
+        assert_eq!(ready.pin_cache, [0; 32]);
+        assert!(!ready.storage_failed);
+        assert!(!ready.locked);
+        assert_eq!(ready.failed_unlocks, 0);
 
         let mut platform = TestPlatform::new(false);
         platform.reset_succeeds = false;
@@ -2112,7 +2096,7 @@ mod tests {
     fn signing_uses_private_key_only_after_first_confirmation() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
-        runtime.app.platform.seed_read_fails = true;
+        runtime.platform.seed_read_fails = true;
 
         let outputs = protocol(
             &mut runtime,
@@ -2147,7 +2131,7 @@ mod tests {
         let confirmation_hash = details.signing_hash;
         assert!(prepared.is_none());
 
-        runtime.app.platform.seed_read_fails = false;
+        runtime.platform.seed_read_fails = false;
         let prepared = confirm(&mut runtime, id, ConfirmationChoice::Approve);
         assert!(matches!(
             prepared.as_slice(),
@@ -2176,7 +2160,7 @@ mod tests {
         assert_eq!(prepared.public_key.len(), 65);
         assert_eq!(prepared.signature.len(), 64);
 
-        runtime.app.platform.seed_read_fails = true;
+        runtime.platform.seed_read_fails = true;
         let completed = confirm(&mut runtime, prepared_id, ConfirmationChoice::Approve);
         let CoreEffect::Transport(
             _,
@@ -2264,7 +2248,7 @@ mod tests {
     fn transaction_confirmation_uses_a_bounded_display_summary() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
-        runtime.app.platform.seed_read_fails = true;
+        runtime.platform.seed_read_fails = true;
 
         let requested = protocol(
             &mut runtime,
@@ -2286,7 +2270,7 @@ mod tests {
         assert_eq!(transaction.selector, [0xa9, 0x05, 0x9c, 0xbb]);
         assert!(prepared.is_none());
 
-        runtime.app.platform.seed_read_fails = false;
+        runtime.platform.seed_read_fails = false;
         let prepared = confirm(&mut runtime, first_id, ConfirmationChoice::Approve);
         let second_id = required_id(&prepared);
         let Some((ConfirmationDetails::EthTransaction(_), Some(prepared))) =
@@ -2484,7 +2468,7 @@ mod tests {
     fn fido_register_and_authenticate_use_two_confirmations() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
-        runtime.app.platform.seed_read_fails = true;
+        runtime.platform.seed_read_fails = true;
 
         let first = fido(
             &mut runtime,
@@ -2511,7 +2495,7 @@ mod tests {
             })
         ));
 
-        runtime.app.platform.seed_read_fails = false;
+        runtime.platform.seed_read_fails = false;
         let registration = fido(
             &mut runtime,
             11,
@@ -2531,7 +2515,7 @@ mod tests {
         assert_eq!(credential_id.len(), oskey_chain::fido::CREDENTIAL_ID_SIZE);
         assert_eq!(public_key.len(), 65);
         let credential_id = credential_id.to_vec();
-        runtime.app.platform.seed_read_fails = true;
+        runtime.platform.seed_read_fails = true;
         let registered = confirm(&mut runtime, registration_id, ConfirmationChoice::Approve);
         assert!(matches!(
             registered.first(),
@@ -2545,7 +2529,7 @@ mod tests {
             }) if result_id == &credential_id && data.len() == 65
         ));
 
-        runtime.app.platform.seed_read_fails = false;
+        runtime.platform.seed_read_fails = false;
         let rp_id_hash = crypto::Hash::sha256(b"ssh:").unwrap();
         let preflight = fido(
             &mut runtime,
@@ -2598,7 +2582,7 @@ mod tests {
             Some((ConfirmationDetails::Fido(_), Some(prepared)))
                 if !prepared.signature.is_empty()
         ));
-        runtime.app.platform.seed_read_fails = true;
+        runtime.platform.seed_read_fails = true;
         assert!(matches!(
             confirm(&mut runtime, signing_id, ConfirmationChoice::Approve).first(),
             Some(CoreEffect::Fido {
