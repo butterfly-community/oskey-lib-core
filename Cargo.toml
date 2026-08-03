@@ -9,19 +9,18 @@ oskey-wallet = { path = "wallet" }
 
 anyhow = { version = "1.0", default-features = false }
 bit-vec = { version = "0.10", default-features = false }
-heapless = { version = "0.9", default-features = false }
 
 prost = { version = "0.14", default-features = false, features = ["derive"] }
 
 alloy-consensus = { version = "2.2", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
-bs58 = { version = "0.5", default-features = false, features = ["check"] }
+bs58 = { version = "0.5", default-features = false, features = ["alloc", "check"] }
 
 zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
-sha2 = { version = "0.11", default-features = false }
-pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
+sha2 = { version = "0.11", default-features = false, features = ["alloc"] }
+pbkdf2 = { version = "0.13", default-features = false, features = ["alloc", "hmac"] }
 hmac = { version = "0.13", default-features = false }
-ripemd = { version = "0.2", default-features = false }
+ripemd = { version = "0.2", default-features = false, features = ["alloc"] }
 k256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 ed25519-dalek = { version = "3.0", default-features = false }

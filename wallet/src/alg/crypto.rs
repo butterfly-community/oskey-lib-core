@@ -1,8 +1,8 @@
-#[cfg(feature = "crypto-psa")]
-use crate::alg::bindings;
+use alloc::vec::Vec;
 use anyhow::{anyhow, bail, Ok, Result};
-use heapless::Vec;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
+#[cfg(feature = "crypto-psa")]
+use {crate::alg::bindings, alloc::vec, zeroize::Zeroize};
 #[cfg(feature = "crypto-rs")]
 use {
     chacha20poly1305::ChaCha20Poly1305,
@@ -346,18 +346,18 @@ impl P256 {
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn sign(key: &[u8], hash: &[u8]) -> Result<Vec<u8, 72>> {
+    pub fn sign(key: &[u8], hash: &[u8]) -> Result<Vec<u8>> {
         if hash.len() != 32 {
             bail!("P-256 hash must contain 32 bytes");
         }
         let signing_key = P256SigningKey::from_slice(key).map_err(|e| anyhow!(e))?;
         let signature: P256Signature = signing_key.sign_prehash(hash).map_err(|e| anyhow!(e))?;
         let der = signature.to_der();
-        Vec::from_slice(der.as_bytes()).map_err(|_| anyhow!(""))
+        Ok(der.as_bytes().to_vec())
     }
 
     #[cfg(feature = "crypto-psa")]
-    pub fn sign(key: &[u8], hash: &[u8]) -> Result<Vec<u8, 72>> {
+    pub fn sign(key: &[u8], hash: &[u8]) -> Result<Vec<u8>> {
         if key.len() != 32 || hash.len() != 32 {
             bail!("P-256 key and hash must contain 32 bytes");
         }
@@ -374,7 +374,7 @@ impl P256 {
 }
 
 #[cfg(feature = "crypto-psa")]
-fn ecdsa_signature_to_der(signature: &[u8; 64]) -> Result<Vec<u8, 72>> {
+fn ecdsa_signature_to_der(signature: &[u8; 64]) -> Result<Vec<u8>> {
     fn integer(value: &[u8]) -> (&[u8], bool) {
         let first = value
             .iter()
@@ -387,24 +387,22 @@ fn ecdsa_signature_to_der(signature: &[u8; 64]) -> Result<Vec<u8, 72>> {
     let (r, r_prefix) = integer(&signature[..32]);
     let (s, s_prefix) = integer(&signature[32..]);
     let sequence_len = 4 + r.len() + s.len() + r_prefix as usize + s_prefix as usize;
-    let mut der = Vec::new();
+    let mut der = Vec::with_capacity(sequence_len + 2);
     der.extend_from_slice(&[
         0x30,
         sequence_len as u8,
         0x02,
         (r.len() + r_prefix as usize) as u8,
-    ])
-    .map_err(|_| anyhow!(""))?;
+    ]);
     if r_prefix {
-        der.push(0).map_err(|_| anyhow!(""))?;
+        der.push(0);
     }
-    der.extend_from_slice(r).map_err(|_| anyhow!(""))?;
-    der.extend_from_slice(&[0x02, (s.len() + s_prefix as usize) as u8])
-        .map_err(|_| anyhow!(""))?;
+    der.extend_from_slice(r);
+    der.extend_from_slice(&[0x02, (s.len() + s_prefix as usize) as u8]);
     if s_prefix {
-        der.push(0).map_err(|_| anyhow!(""))?;
+        der.push(0);
     }
-    der.extend_from_slice(s).map_err(|_| anyhow!(""))?;
+    der.extend_from_slice(s);
     Ok(der)
 }
 
@@ -510,36 +508,23 @@ impl Curve25519 {
 
 impl ChaCha20Poly1305Cipher {
     #[cfg(feature = "crypto-rs")]
-    pub fn encrypt(
-        key: &[u8; 32],
-        nonce: &[u8; 12],
-        bytes: &[u8],
-    ) -> Result<heapless::Vec<u8, 1024>> {
+    pub fn encrypt(key: &[u8; 32], nonce: &[u8; 12], bytes: &[u8]) -> Result<Vec<u8>> {
         use chacha20poly1305::aead::{Aead, KeyInit};
 
         let cipher = ChaCha20Poly1305::new(key.into());
 
-        let ciphertext = cipher
+        cipher
             .encrypt(nonce.into(), bytes)
-            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
-
-        let mut result = heapless::Vec::new();
-        for byte in ciphertext {
-            result
-                .push(byte)
-                .map_err(|_| anyhow!("Result buffer too small"))?;
-        }
-
-        Ok(result)
+            .map_err(|e| anyhow!("Encryption failed: {}", e))
     }
 
     #[cfg(feature = "crypto-psa")]
-    pub fn encrypt(
-        key: &[u8; 32],
-        nonce: &[u8; 12],
-        bytes: &[u8],
-    ) -> Result<heapless::Vec<u8, 1024>> {
-        let mut ciphertext = [0u8; 1024];
+    pub fn encrypt(key: &[u8; 32], nonce: &[u8; 12], bytes: &[u8]) -> Result<Vec<u8>> {
+        let output_len = bytes
+            .len()
+            .checked_add(16)
+            .ok_or_else(|| anyhow!("Plaintext is too large"))?;
+        let mut ciphertext = vec![0u8; output_len];
         let mut ciphertext_len = 0usize;
 
         let status = unsafe {
@@ -558,41 +543,28 @@ impl ChaCha20Poly1305Cipher {
             anyhow::bail!("ChaCha20Poly1305 encryption failed with status: {}", status);
         }
 
-        let mut result = heapless::Vec::new();
-        result
-            .extend_from_slice(&ciphertext[..ciphertext_len])
-            .map_err(|_| anyhow!("Result buffer too small"))?;
-
-        Ok(result)
+        ciphertext.truncate(ciphertext_len);
+        Ok(ciphertext)
     }
 
     #[cfg(feature = "crypto-rs")]
-    pub fn decrypt(
-        key: &[u8; 32],
-        nonce: &[u8; 12],
-        ciphertext: &[u8],
-    ) -> Result<heapless::Vec<u8, 1024>> {
+    pub fn decrypt(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
         use chacha20poly1305::aead::{Aead, KeyInit};
 
         let cipher = ChaCha20Poly1305::new(key.into());
 
-        let mut bytes = cipher
+        cipher
             .decrypt(nonce.into(), ciphertext)
-            .map_err(|e| anyhow!("Decryption failed: {}", e))?;
-
-        let result =
-            heapless::Vec::from_slice(&bytes).map_err(|_| anyhow!("Result buffer too small"));
-        bytes.zeroize();
-        result
+            .map_err(|e| anyhow!("Decryption failed: {}", e))
     }
 
     #[cfg(feature = "crypto-psa")]
-    pub fn decrypt(
-        key: &[u8; 32],
-        nonce: &[u8; 12],
-        ciphertext: &[u8],
-    ) -> Result<heapless::Vec<u8, 1024>> {
-        let mut bytes = [0u8; 1024];
+    pub fn decrypt(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let plaintext_len = ciphertext
+            .len()
+            .checked_sub(16)
+            .ok_or_else(|| anyhow!("Invalid ciphertext length"))?;
+        let mut bytes = vec![0u8; plaintext_len];
         let mut bytes_len = 0usize;
 
         let status = unsafe {
@@ -612,10 +584,8 @@ impl ChaCha20Poly1305Cipher {
             anyhow::bail!("ChaCha20Poly1305 decryption failed with status: {}", status);
         }
 
-        let result = heapless::Vec::from_slice(&bytes[..bytes_len])
-            .map_err(|_| anyhow!("Result buffer too small"));
-        bytes.zeroize();
-        result
+        bytes.truncate(bytes_len);
+        Ok(bytes)
     }
 }
 
@@ -854,6 +824,17 @@ mod tests {
         let ciphertext = ChaCha20Poly1305Cipher::encrypt(&key, &nonce, plaintext).unwrap();
         let decrypted = ChaCha20Poly1305Cipher::decrypt(&key, &nonce, &ciphertext).unwrap();
         assert_eq!(decrypted.as_slice(), plaintext);
+    }
+
+    #[test]
+    fn test_chacha20poly1305_large_data() {
+        let key = [0x5a; 32];
+        let nonce = [0xa5; 12];
+        let plaintext = vec![0x3c; 4096];
+
+        let ciphertext = ChaCha20Poly1305Cipher::encrypt(&key, &nonce, &plaintext).unwrap();
+        let decrypted = ChaCha20Poly1305Cipher::decrypt(&key, &nonce, &ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 
     #[test]

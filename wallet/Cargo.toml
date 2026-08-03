@@ -26,7 +26,6 @@ build = ["dep:bindgen", "dep:cmake", "dep:pkg-config"]
 [dependencies]
 anyhow.workspace = true
 bit-vec.workspace = true
-heapless.workspace = true
 zeroize.workspace = true
 
 sha2 = { workspace = true, optional = true }

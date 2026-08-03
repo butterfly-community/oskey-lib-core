@@ -1,22 +1,23 @@
+use alloc::vec::Vec;
 use anyhow::{anyhow, bail, Result};
 use bit_vec::BitVec;
-use heapless::Vec;
 use zeroize::Zeroizing;
 
 use crate::alg::crypto::{Hash, PBKDF2};
 use crate::alg::word_list::ENGLISH_WORDS;
 
 pub struct Mnemonic {
-    pub words: Vec<&'static str, 24>,
+    pub words: Vec<&'static str>,
 }
 
 impl Mnemonic {
     pub fn from_phrase(phrase: &str) -> Result<Self> {
-        let mut original_words = Vec::<&str, 24>::new();
+        let mut original_words = Vec::with_capacity(24);
         for word in phrase.split_whitespace() {
-            original_words
-                .push(word)
-                .map_err(|_| anyhow!("Invalid entropy length"))?;
+            if original_words.len() == 24 {
+                bail!("Invalid entropy length");
+            }
+            original_words.push(word);
         }
         let original_bits = Self::words_to_bits(&original_words)?;
 
@@ -80,15 +81,17 @@ impl Mnemonic {
         Ok(full_bits)
     }
 
-    fn bits_to_words(bits: &BitVec) -> Result<Vec<&'static str, 24>> {
-        let mut words = Vec::new();
+    fn bits_to_words(bits: &BitVec) -> Result<Vec<&'static str>> {
         let total_bits = bits.len();
+        let word_count = total_bits.div_ceil(11);
+        if word_count > 24 {
+            bail!("Invalid entropy length");
+        }
+        let mut words = Vec::with_capacity(word_count);
 
         for word_idx in (0..total_bits).step_by(11) {
             let index = Self::load_bits_be(bits, word_idx, 11);
-            words
-                .push(ENGLISH_WORDS[index as usize])
-                .map_err(|e| anyhow!(e))?;
+            words.push(ENGLISH_WORDS[index as usize]);
         }
 
         Ok(words)
@@ -116,15 +119,16 @@ impl Mnemonic {
         Ok(bits)
     }
 
-    fn bits_to_entropy(full_bits: &BitVec) -> Result<Vec<u8, 32>> {
+    fn bits_to_entropy(full_bits: &BitVec) -> Result<Vec<u8>> {
         let entropy_len = full_bits.len() * 32 / 33;
-        let mut entropy_bytes = Vec::new();
+        if entropy_len > 256 {
+            bail!("Invalid entropy length");
+        }
+        let mut entropy_bytes = Vec::with_capacity(entropy_len.div_ceil(8));
 
         for byte_idx in (0..entropy_len).step_by(8) {
             let byte = Self::load_bits_be(full_bits, byte_idx, 8) as u8;
-            entropy_bytes
-                .push(byte)
-                .map_err(|_| anyhow!("Entropy conversion failed"))?;
+            entropy_bytes.push(byte);
         }
 
         Ok(entropy_bytes)

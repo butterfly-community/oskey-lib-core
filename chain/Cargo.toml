@@ -16,7 +16,6 @@ oskey-wallet.workspace = true
 
 alloy-consensus.workspace = true
 anyhow.workspace = true
-heapless.workspace = true
 
 [dev-dependencies]
 hex.workspace = true

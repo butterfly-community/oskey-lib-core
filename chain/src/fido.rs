@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use anyhow::{bail, Result};
 use oskey_wallet::alg::crypto::{Hash, HMAC, P256};
 use oskey_wallet::path::{ChildNumber, DerivationPath};
@@ -64,12 +65,7 @@ pub fn create(
     })
 }
 
-pub fn sign(
-    seed: &[u8],
-    credential_id: &[u8],
-    rp_id_hash: &[u8],
-    hash: &[u8],
-) -> Result<heapless::Vec<u8, 72>> {
+pub fn sign(seed: &[u8], credential_id: &[u8], rp_id_hash: &[u8], hash: &[u8]) -> Result<Vec<u8>> {
     let (key_root, _) = authenticate(seed, credential_id, rp_id_hash)?;
     let key = derive_identity(
         key_root,

@@ -1,6 +1,6 @@
+use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
 use core::str::FromStr;
-use heapless::Vec;
 
 const HARDENED_BIT: u32 = 1 << 31;
 
@@ -55,7 +55,7 @@ impl FromStr for ChildNumber {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct DerivationPath {
-    path: Vec<ChildNumber, 32>,
+    path: Vec<ChildNumber>,
 }
 
 impl AsRef<[ChildNumber]> for DerivationPath {
@@ -82,9 +82,10 @@ impl FromStr for DerivationPath {
 
         let mut path_vec = Vec::new();
         for part in parts {
-            path_vec
-                .push(part.parse()?)
-                .map_err(|_| anyhow!("Path too long"))?;
+            if path_vec.len() == 32 {
+                return Err(anyhow!("Path too long"));
+            }
+            path_vec.push(part.parse()?);
         }
 
         Ok(DerivationPath { path: path_vec })
@@ -94,19 +95,17 @@ impl FromStr for DerivationPath {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heapless::Vec;
 
     #[test]
     fn test_derivation_path() {
         let path: DerivationPath = "m/44'/60'/0'/0/0".parse().unwrap();
-        let expected_path = Vec::from_slice(&[
+        let expected_path = Vec::from([
             ChildNumber(44 | HARDENED_BIT),
             ChildNumber(60 | HARDENED_BIT),
             ChildNumber(HARDENED_BIT),
             ChildNumber(0),
             ChildNumber(0),
-        ])
-        .unwrap();
+        ]);
 
         assert_eq!(
             path,

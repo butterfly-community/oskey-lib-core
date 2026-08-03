@@ -1,10 +1,9 @@
+use alloc::vec::Vec;
 use anyhow::{anyhow, Result};
-use heapless::Vec;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::alg::crypto::{Curve25519, Ed25519, Hash, HMAC, K256, P256};
 use crate::path::{ChildNumber, DerivationPath};
-use crate::utils::ByteVec;
 
 #[derive(Clone, PartialEq, Hash, Eq, Debug, Copy)]
 pub enum Curve {
@@ -110,19 +109,19 @@ impl ExtendedPrivKey {
 
         match self.curve {
             Curve::K256 | Curve::P256 => {
-                let mut bytes = ByteVec::<128>::new();
+                let mut bytes = Zeroizing::new(Vec::with_capacity(37));
                 if child.is_normal() {
                     let encoded_point = match self.curve {
                         Curve::K256 => K256::export_pk_compressed(&self.secret_key)?,
                         Curve::P256 => P256::export_pk_compressed(&self.secret_key)?,
                         _ => unreachable!(),
                     };
-                    bytes.extend(&encoded_point)?;
+                    bytes.extend_from_slice(&encoded_point);
                 } else {
-                    bytes.push(0)?;
-                    bytes.extend(&self.secret_key)?;
+                    bytes.push(0);
+                    bytes.extend_from_slice(&self.secret_key);
                 }
-                bytes.extend(&child.to_bytes())?;
+                bytes.extend_from_slice(&child.to_bytes());
 
                 let i = HMAC::hmac_sha512(&self.chain_code, bytes.as_slice())?;
                 let mut i = i;
@@ -137,10 +136,10 @@ impl ExtendedPrivKey {
                         break (key, ir.try_into()?);
                     }
 
-                    let mut retry = ByteVec::<128>::new();
-                    retry.push(1)?;
-                    retry.extend(ir)?;
-                    retry.extend(&child.to_bytes())?;
+                    let mut retry = Zeroizing::new(Vec::with_capacity(37));
+                    retry.push(1);
+                    retry.extend_from_slice(ir);
+                    retry.extend_from_slice(&child.to_bytes());
                     i = HMAC::hmac_sha512(&self.chain_code, retry.as_slice())?;
                 };
                 Ok(ExtendedPrivKey {
@@ -153,10 +152,10 @@ impl ExtendedPrivKey {
                 })
             }
             Curve::Ed25519 | Curve::Curve25519 => {
-                let mut data = ByteVec::<128>::new();
-                data.push(0)?;
-                data.extend(&self.secret_key)?;
-                data.extend(&child.to_bytes())?;
+                let mut data = Zeroizing::new(Vec::with_capacity(37));
+                data.push(0);
+                data.extend_from_slice(&self.secret_key);
+                data.extend_from_slice(&child.to_bytes());
 
                 let i = HMAC::hmac_sha512(&self.chain_code, data.as_slice())?;
                 let (sk, cc) = i.split_at(32);
@@ -173,37 +172,31 @@ impl ExtendedPrivKey {
         }
     }
 
-    pub fn export_pk(&self) -> Result<Vec<u8, 65>> {
+    pub fn export_pk(&self) -> Result<Vec<u8>> {
         match self.curve {
             Curve::K256 => {
                 let pk = K256::export_pk(&self.secret_key)?;
-                Ok(Vec::from_slice(&pk).unwrap())
+                Ok(pk.to_vec())
             }
             Curve::Ed25519 => {
                 let pk = Ed25519::export_pk(&self.secret_key)?;
-                Ok(Vec::from_slice(&pk).unwrap())
+                Ok(pk.to_vec())
             }
             Curve::Curve25519 => {
                 let pk = Curve25519::export_pk(&self.secret_key)?;
-                Ok(Vec::from_slice(&pk).unwrap())
+                Ok(pk.to_vec())
             }
             Curve::P256 => {
                 let pk = P256::export_pk(&self.secret_key)?;
-                Ok(Vec::from_slice(&pk).unwrap())
+                Ok(pk.to_vec())
             }
         }
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Result<Vec<u8, 64>> {
+    pub fn sign(&self, msg: &[u8]) -> Result<Vec<u8>> {
         match self.curve {
-            Curve::K256 => {
-                let sig = K256::sign(&self.secret_key, msg)?;
-                Ok(Vec::from_slice(&sig).expect("Signature fits in Vec<u8, 64>"))
-            }
-            Curve::Ed25519 => {
-                let sig = Ed25519::sign(&self.secret_key, msg)?;
-                Ok(Vec::from_slice(&sig).expect("Signature fits in Vec<u8, 64>"))
-            }
+            Curve::K256 => Ok(K256::sign(&self.secret_key, msg)?.to_vec()),
+            Curve::Ed25519 => Ok(Ed25519::sign(&self.secret_key, msg)?.to_vec()),
             Curve::Curve25519 => Err(anyhow!("X25519 keys cannot be used for signing")),
             Curve::P256 => Err(anyhow!("P-256 signing is not supported by this interface")),
         }
@@ -217,10 +210,7 @@ impl ExtendedPrivKey {
             Curve::P256 => &P256::export_pk_compressed(&self.secret_key)?[..],
         };
 
-        let pub_key: Vec<u8, 33> =
-            Vec::from_slice(pub_key_slice).expect("Public key fits in Vec<u8, 33>");
-
-        let hash = Hash::hash160(&pub_key)?;
+        let hash = Hash::hash160(pub_key_slice)?;
 
         let mut fingerprint = [0u8; 4];
         fingerprint.copy_from_slice(&hash[..4]);
@@ -232,9 +222,8 @@ impl ExtendedPrivKey {
 #[cfg(test)]
 mod test {
     extern crate alloc;
-    use alloc::{string::ToString, vec, vec::Vec};
-    use core::{str, str::FromStr};
-    use heapless::String;
+    use alloc::{string::String, string::ToString, vec, vec::Vec};
+    use core::str;
 
     use super::*;
 
@@ -640,23 +629,23 @@ mod test {
         Ok(())
     }
 
-    fn run_test_build_encode(s: &ExtendedPrivKey, is_public: bool) -> Result<String<256>> {
-        let mut data = ByteVec::<128>::new();
+    fn run_test_build_encode(s: &ExtendedPrivKey, is_public: bool) -> Result<String> {
+        let mut data = Zeroizing::new(Vec::with_capacity(78));
 
         // 1. version
-        data.extend(&s.curve.version_bytes(is_public))?;
+        data.extend_from_slice(&s.curve.version_bytes(is_public));
 
         // 2. depth
-        data.push(s.depth)?;
+        data.push(s.depth);
 
         // 3. parent fingerprint
-        data.extend(&s.parent_fingerprint)?;
+        data.extend_from_slice(&s.parent_fingerprint);
 
         // 4. child number
-        data.extend(&s.child_number.to_bytes())?;
+        data.extend_from_slice(&s.child_number.to_bytes());
 
         // 5. chain code
-        data.extend(&s.chain_code)?;
+        data.extend_from_slice(&s.chain_code);
 
         // 6. key data
         if is_public {
@@ -664,12 +653,12 @@ mod test {
                 Curve::K256 => &K256::export_pk_compressed(&s.secret_key)?[..],
                 _ => unreachable!(),
             };
-            data.extend(pub_key)?;
+            data.extend_from_slice(pub_key);
         } else {
             match s.curve {
                 Curve::K256 => {
-                    data.push(0)?;
-                    data.extend(&s.secret_key)?;
+                    data.push(0);
+                    data.extend_from_slice(&s.secret_key);
                 }
                 _ => unreachable!(),
             }
@@ -682,7 +671,7 @@ mod test {
             .onto(&mut base58[..])
             .map_err(|e| anyhow!(e))?;
 
-        String::from_str(str::from_utf8(&base58[..len])?).map_err(|_| anyhow!("utf8"))
+        Ok(str::from_utf8(&base58[..len])?.into())
     }
 
     #[test]

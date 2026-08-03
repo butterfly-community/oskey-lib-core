@@ -1168,11 +1168,11 @@ impl<P: WalletPlatform> WalletApp<P> {
         };
         let private_key =
             wallets::ExtendedPrivKey::derive(&self.load_seed()?, path, wallets::Curve::K256)?;
-        let public_key = private_key.export_pk()?.to_vec();
+        let public_key = private_key.export_pk()?;
         Ok(PreparedResult {
             from: Some(OSKeyTxEip191::address(&public_key)?),
             public_key,
-            signature: private_key.sign(&hash)?.to_vec(),
+            signature: private_key.sign(&hash)?,
             ..Default::default()
         })
     }
@@ -1227,12 +1227,9 @@ impl<P: WalletPlatform> WalletApp<P> {
 
         let mut nonce = [0; 12];
         nonce.copy_from_slice(&stored[..12]);
-        let mut seed =
-            crypto::ChaCha20Poly1305Cipher::decrypt(&self.pin_cache, &nonce, &stored[12..])
-                .map_err(|_| SeedLoadError::Credentials)?;
-        let result = Zeroizing::new(seed.as_slice().to_vec());
-        seed.as_mut_slice().zeroize();
-        Ok(result)
+        let seed = crypto::ChaCha20Poly1305Cipher::decrypt(&self.pin_cache, &nonce, &stored[12..])
+            .map_err(|_| SeedLoadError::Credentials)?;
+        Ok(Zeroizing::new(seed))
     }
 
     fn load_seed(&self) -> Result<Zeroizing<Vec<u8>>> {
