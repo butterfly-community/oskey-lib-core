@@ -19,7 +19,7 @@ pub enum FidoOperation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EthMessageConfirmation {
-    pub from: [u8; 20],
+    pub path: String,
     pub preview: String,
     pub byte_length: u64,
     pub signing_hash: [u8; 32],
@@ -28,7 +28,7 @@ pub struct EthMessageConfirmation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EthTransactionConfirmation {
-    pub from: [u8; 20],
+    pub path: String,
     pub chain_id: u64,
     pub nonce: u64,
     pub gas_price: String,

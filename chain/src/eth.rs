@@ -17,11 +17,7 @@ impl OSKeyTxEip191 {
         eip191_hash_message(message).into()
     }
 
-    pub fn confirmation(
-        message: &str,
-        hash: &[u8; 32],
-        from: [u8; 20],
-    ) -> Result<EthMessageConfirmation> {
+    pub fn confirmation(message: &str, path: String) -> Result<EthMessageConfirmation> {
         if !message
             .bytes()
             .all(|byte| byte == b'\n' || (b' '..=b'~').contains(&byte))
@@ -31,10 +27,10 @@ impl OSKeyTxEip191 {
         let preview_end = message.len().min(MESSAGE_PREVIEW_BYTES);
 
         Ok(EthMessageConfirmation {
-            from,
+            path,
             preview: message[..preview_end].into(),
             byte_length: message.len() as u64,
-            signing_hash: *hash,
+            signing_hash: Self::hash_message(message.as_bytes()),
             truncated: preview_end < message.len(),
         })
     }
@@ -93,14 +89,14 @@ impl OSKeyTxEip2930 {
         self.tx.signature_hash().into()
     }
 
-    pub fn confirmation(&self, hash: &[u8; 32], from: [u8; 20]) -> EthTransactionConfirmation {
+    pub fn confirmation(&self, path: String) -> EthTransactionConfirmation {
         let (to, contract_creation) = match &self.tx.to {
             TxKind::Call(address) => (address.as_slice().to_vec(), false),
             TxKind::Create => (Vec::new(), true),
         };
 
         EthTransactionConfirmation {
-            from,
+            path,
             chain_id: self.tx.chain_id,
             nonce: self.tx.nonce,
             gas_price: self.tx.gas_price.to_string(),
@@ -111,7 +107,7 @@ impl OSKeyTxEip2930 {
             input_length: self.tx.input.len() as u64,
             selector: self.tx.input.get(..4).unwrap_or_default().to_vec(),
             input_hash: keccak256(&self.tx.input).into(),
-            signing_hash: *hash,
+            signing_hash: self.hash(),
         }
     }
 }
@@ -162,9 +158,9 @@ mod tests {
 
         let tx = OSKeyTxEip2930::new(source).unwrap();
         let hash = tx.hash();
-        let confirmation = tx.confirmation(&hash, [1; 20]);
+        let confirmation = tx.confirmation("m/44'/60'/0'/0/0".into());
 
-        assert_eq!(confirmation.from, [1; 20]);
+        assert_eq!(confirmation.path, "m/44'/60'/0'/0/0");
         assert_eq!(confirmation.chain_id, 11155111);
         assert_eq!(confirmation.nonce, 5);
         assert_eq!(confirmation.gas_price, "1112408");
@@ -202,38 +198,32 @@ mod tests {
     fn test_message_confirmation_is_bounded() {
         let message = "a".repeat(4096);
         let hash = OSKeyTxEip191::hash_message(message.as_bytes());
-        let confirmation = OSKeyTxEip191::confirmation(&message, &hash, [2; 20]).unwrap();
+        let confirmation = OSKeyTxEip191::confirmation(&message, "m/0".into()).unwrap();
 
-        assert_eq!(confirmation.from, [2; 20]);
+        assert_eq!(confirmation.path, "m/0");
         assert!(confirmation.truncated);
         assert_eq!(confirmation.byte_length, 4096);
         assert_eq!(confirmation.signing_hash, hash);
-        assert!(confirmation.preview.len() <= MESSAGE_PREVIEW_BYTES);
         assert_eq!(confirmation.preview.len(), MESSAGE_PREVIEW_BYTES);
     }
 
     #[test]
     fn message_confirmation_rejects_hidden_suffix() {
         let message = "approve\0hidden";
-        let hash = OSKeyTxEip191::hash_message(message.as_bytes());
-
-        assert!(OSKeyTxEip191::confirmation(message, &hash, [0; 20]).is_err());
+        assert!(OSKeyTxEip191::confirmation(message, "m/0".into()).is_err());
     }
 
     #[test]
     fn message_confirmation_accepts_multiline_text() {
         let message = "example.com wants you to sign in\nURI: https://example.com";
-        let hash = OSKeyTxEip191::hash_message(message.as_bytes());
-        let confirmation = OSKeyTxEip191::confirmation(message, &hash, [0; 20]).unwrap();
-
+        let confirmation = OSKeyTxEip191::confirmation(message, "m/0".into()).unwrap();
         assert_eq!(confirmation.preview, message);
     }
 
     #[test]
     fn message_confirmation_rejects_unrenderable_text() {
-        let message = "批准";
-        let hash = OSKeyTxEip191::hash_message(message.as_bytes());
-        assert!(OSKeyTxEip191::confirmation(message, &hash, [0; 20]).is_err());
+        let message = "approve\u{7f}hidden";
+        assert!(OSKeyTxEip191::confirmation(message, "m/0".into()).is_err());
     }
 
     #[test]
