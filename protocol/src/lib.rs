@@ -75,6 +75,10 @@ impl FrameParser {
     }
 
     pub fn unpack(&mut self) -> Option<Result<ReqData>> {
+        self.unpack_message()
+    }
+
+    pub fn unpack_message<M: Message + Default>(&mut self) -> Option<Result<M>> {
         let payload_len = self.payload_len()?;
         if payload_len > Self::MAX_PAYLOAD_LEN {
             self.clear();
@@ -86,7 +90,7 @@ impl FrameParser {
 
         let frame_len = Self::HEADER_LEN + payload_len;
 
-        let decoded = proto::ReqData::decode(&self.buffer[Self::HEADER_LEN..frame_len]);
+        let decoded = M::decode(&self.buffer[Self::HEADER_LEN..frame_len]);
 
         if frame_len == self.buffer.len()
             && self.buffer.capacity() > Self::MAX_RETAINED_FRAME_CAPACITY
@@ -209,6 +213,26 @@ mod tests {
             FrameParser::pack_message(&request),
             FrameParser::pack(&request.encode_to_vec())
         );
+    }
+
+    #[test]
+    fn test_unpack_response() {
+        let response = proto::ResData {
+            payload: Some(ResPayload::VersionResponse(VersionResponse {
+                version: "1.0.0".into(),
+                features: Some(Features::default()),
+                sn: "TEST".into(),
+            })),
+        };
+        let mut parser = FrameParser::new();
+        parser.push(&FrameParser::pack_message(&response));
+
+        let decoded = parser
+            .unpack_message::<proto::ResData>()
+            .expect("complete frame")
+            .expect("valid response");
+
+        assert_eq!(decoded, response);
     }
 
     #[test]
