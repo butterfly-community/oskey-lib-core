@@ -82,7 +82,7 @@ message LockRequest
 message InitWalletCustomRequest
 {
 	string words = 2;
-	string password = 3;
+	string passphrase = 3;
 	bytes pin = 4;
 	reserved 5;
 	reserved "pin_text";
@@ -91,7 +91,7 @@ message InitWalletCustomRequest
 message InitWalletRequest
 {
 	uint32 length = 1;
-	string password = 2;
+	string passphrase = 2;
 	optional bytes seed = 3;
 	bytes pin = 4;
 	reserved 5;

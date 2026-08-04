@@ -112,8 +112,15 @@ pub enum WalletState {
 
 pub enum LocalRequest<'a> {
     Unlock(&'a str),
-    InitCustom { words: &'a str, pin: &'a str },
-    GenerateMnemonic { words: u32, entropy: &'a [u8] },
+    InitCustom {
+        words: &'a str,
+        passphrase: &'a str,
+        pin: &'a str,
+    },
+    GenerateMnemonic {
+        words: u32,
+        entropy: &'a [u8],
+    },
     Restart,
     ResetStorage,
 }
@@ -379,7 +386,11 @@ impl<P: WalletPlatform> WalletRuntime<P> {
 
         match request {
             LocalRequest::Unlock(pin) => self.handle_local_unlock(pin),
-            LocalRequest::InitCustom { words, pin } => self.handle_local_init_custom(words, pin),
+            LocalRequest::InitCustom {
+                words,
+                passphrase,
+                pin,
+            } => self.handle_local_init_custom(words, passphrase, pin),
             LocalRequest::GenerateMnemonic { words, entropy } => {
                 self.handle_generate_mnemonic(words, entropy)
             }
@@ -737,13 +748,13 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                     self.set_pin_hash(&request.pin)?;
                     let entropy = Zeroizing::new(self.platform.random(entropy_len));
                     let mnemonic = mnemonic::Mnemonic::from_entropy(&entropy)?;
-                    self.initialize_seed(&mnemonic, &request.password)?;
+                    self.initialize_seed(&mnemonic, &request.passphrase)?;
                     Ok(mnemonic.words.join(" "))
                 })();
                 self.external_init_result(route, result)
             }
         };
-        request.password.zeroize();
+        request.passphrase.zeroize();
         request.pin.zeroize();
         request.seed.zeroize();
         effects
@@ -764,19 +775,24 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 let result = (|| {
                     self.set_pin_hash(&request.pin)?;
                     let mnemonic = mnemonic::Mnemonic::from_phrase(&request.words)?;
-                    self.initialize_seed(&mnemonic, &request.password)?;
+                    self.initialize_seed(&mnemonic, &request.passphrase)?;
                     Ok(mnemonic.words.join(" "))
                 })();
                 self.external_init_result(route, result)
             }
         };
         request.words.zeroize();
-        request.password.zeroize();
+        request.passphrase.zeroize();
         request.pin.zeroize();
         effects
     }
 
-    fn handle_local_init_custom(&mut self, words: &str, pin: &str) -> Vec<CoreEffect> {
+    fn handle_local_init_custom(
+        &mut self,
+        words: &str,
+        passphrase: &str,
+        pin: &str,
+    ) -> Vec<CoreEffect> {
         match self.seed_exists() {
             Err(_) => return vec![Self::local_error(proto::AppError::Failed, 0)],
             Ok(true) => return vec![Self::local_error(proto::AppError::InvalidAction, 0)],
@@ -786,7 +802,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         let result = (|| {
             self.set_pin_text(pin)?;
             let mnemonic = mnemonic::Mnemonic::from_phrase(words)?;
-            self.initialize_seed(&mnemonic, "")
+            self.initialize_seed(&mnemonic, passphrase)
         })();
 
         match result {
@@ -798,8 +814,8 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         }
     }
 
-    fn initialize_seed(&mut self, mnemonic: &mnemonic::Mnemonic, password: &str) -> Result<()> {
-        let mut seed = mnemonic.to_seed(password)?;
+    fn initialize_seed(&mut self, mnemonic: &mnemonic::Mnemonic, passphrase: &str) -> Result<()> {
+        let mut seed = mnemonic.to_seed(passphrase)?;
         if !self.platform.write_unlock_failures(0) {
             seed.zeroize();
             return Err(anyhow!("Failed to initialize unlock counter"));
@@ -1408,11 +1424,33 @@ mod tests {
     fn init(runtime: &mut WalletRuntime<TestPlatform>) {
         let outputs = runtime.handle(CoreRequest::Local(LocalRequest::InitCustom {
             words: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            passphrase: "",
             pin: "Password1!",
         }));
         assert!(outputs
             .iter()
             .any(|output| matches!(output, CoreEffect::WalletState(WalletState::Ready))));
+    }
+
+    #[test]
+    fn local_init_uses_mnemonic_passphrase() {
+        let mut runtime = WalletRuntime::new(TestPlatform::new(true));
+        let outputs = runtime.handle(CoreRequest::Local(LocalRequest::InitCustom {
+            words: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            passphrase: "TREZOR",
+            pin: "Password1!",
+        }));
+
+        assert!(outputs
+            .iter()
+            .any(|output| matches!(output, CoreEffect::WalletState(WalletState::Ready))));
+        assert_eq!(
+            hex::encode(runtime.load_seed().unwrap()),
+            concat!(
+                "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e5349553",
+                "1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
+            )
+        );
     }
 
     fn protocol(
@@ -1542,6 +1580,7 @@ mod tests {
             runtime
                 .handle(CoreRequest::Local(LocalRequest::InitCustom {
                     words: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                    passphrase: "",
                     pin: "Password1!",
                 }))
                 .as_slice(),
@@ -1556,7 +1595,7 @@ mod tests {
                 Transport::Uart,
                 &protocol_request(req_data::Payload::InitRequest(proto::InitWalletRequest {
                     length: 12,
-                    password: String::new(),
+                    passphrase: String::new(),
                     seed: None,
                     pin: vec![0; 32],
                 })),
@@ -1658,7 +1697,7 @@ mod tests {
                 Transport::Uart,
                 &protocol_request(req_data::Payload::InitRequest(proto::InitWalletRequest {
                     length,
-                    password: String::new(),
+                    passphrase: String::new(),
                     seed: None,
                     pin: vec![0; 32],
                 })),
@@ -1713,7 +1752,7 @@ mod tests {
             Transport::Uart,
             &protocol_request(req_data::Payload::InitRequest(proto::InitWalletRequest {
                 length: 12,
-                password: String::new(),
+                passphrase: String::new(),
                 seed: None,
                 pin: vec![0; 32],
             })),
@@ -1743,6 +1782,7 @@ mod tests {
             runtime
                 .handle(CoreRequest::Local(LocalRequest::InitCustom {
                     words: "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                    passphrase: "",
                     pin: "Different1!",
                 }))
                 .as_slice(),
@@ -1755,7 +1795,7 @@ mod tests {
         for payload in [
             req_data::Payload::InitRequest(proto::InitWalletRequest {
                 length: 12,
-                password: String::new(),
+                passphrase: String::new(),
                 seed: None,
                 pin: vec![0; 32],
             }),
@@ -1763,7 +1803,7 @@ mod tests {
                 words:
                     "legal winner thank year wave sausage worth useful legal winner thank yellow"
                         .into(),
-                password: String::new(),
+                passphrase: String::new(),
                 pin: vec![0; 32],
             }),
         ] {
