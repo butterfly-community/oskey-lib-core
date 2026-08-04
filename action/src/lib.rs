@@ -302,7 +302,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
     }
 
     fn is_busy(&self) -> bool {
-        self.confirmation.is_waiting()
+        self.confirmation.is_waiting() || self.authorized_fido.is_some()
     }
 
     pub fn state(&self) -> WalletState {
@@ -410,7 +410,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
     }
 
     fn handle_fido(&mut self, id: u32, request: FidoRequest<'_>) -> Vec<CoreEffect> {
-        if self.is_busy() {
+        if self.confirmation.is_waiting() {
             if matches!(request, FidoRequest::CancelConfirmation) {
                 return self.cancel_fido_confirmation(id);
             }
@@ -446,29 +446,32 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             return Vec::new();
         };
 
-        let mut outputs = vec![CoreEffect::ConfirmationCompleted {
-            id,
-            outcome: match choice {
-                ConfirmationChoice::Approve => ConfirmationOutcome::Approved,
-                ConfirmationChoice::Reject => ConfirmationOutcome::Rejected,
-            },
-        }];
-        if matches!(&pending.action, PendingAction::Sign(_)) {
-            self.finish_sign_confirmation(pending, choice, &mut outputs);
+        let mut outputs = Vec::new();
+        let completed = if matches!(&pending.action, PendingAction::Sign(_)) {
+            self.handle_sign_decision(pending, choice, &mut outputs)
         } else {
-            self.finish_fido_confirmation(pending, choice, &mut outputs);
+            self.handle_fido_decision(pending, choice, &mut outputs)
+        };
+        if completed {
+            outputs.push(CoreEffect::ConfirmationCompleted {
+                id,
+                outcome: match choice {
+                    ConfirmationChoice::Approve => ConfirmationOutcome::Approved,
+                    ConfirmationChoice::Reject => ConfirmationOutcome::Rejected,
+                },
+            });
         }
 
         outputs.push(CoreEffect::WalletState(self.state()));
         outputs
     }
 
-    fn finish_sign_confirmation(
+    fn handle_sign_decision(
         &mut self,
         mut pending: PendingConfirmation<PendingAction>,
         choice: ConfirmationChoice,
         outputs: &mut Vec<CoreEffect>,
-    ) {
+    ) -> bool {
         let PendingAction::Sign(sign) = &pending.action else {
             unreachable!();
         };
@@ -477,7 +480,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 0,
                 Self::transport_error(sign.reply_to, proto::AppError::Rejected),
             );
-            return;
+            return true;
         }
 
         if pending.prepared.is_none() {
@@ -486,15 +489,13 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                     0,
                     Self::transport_error(sign.reply_to, proto::AppError::Failed),
                 );
-                return;
+                return true;
             };
             pending.prepared = Some(prepared);
-            let next_id = self
-                .confirmation
-                .resume(pending)
-                .expect("the completed confirmation released the service");
-            outputs.push(CoreEffect::ConfirmationRequired(next_id));
-            return;
+            let id = pending.id;
+            assert!(self.confirmation.restore(pending));
+            outputs.push(CoreEffect::ConfirmationRequired(id));
+            return false;
         }
 
         let PendingAction::Sign(sign) = pending.action else {
@@ -520,14 +521,15 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 }),
             ),
         );
+        true
     }
 
-    fn finish_fido_confirmation(
+    fn handle_fido_decision(
         &mut self,
         mut pending: PendingConfirmation<PendingAction>,
         choice: ConfirmationChoice,
         outputs: &mut Vec<CoreEffect>,
-    ) {
+    ) -> bool {
         let PendingAction::Fido(request_id) = &pending.action else {
             unreachable!();
         };
@@ -537,6 +539,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         };
         if choice == ConfirmationChoice::Reject {
             outputs.insert(0, Self::fido(request_id, Self::fido_error()));
+            true
         } else if matches!(
             details.operation,
             FidoOperation::Register | FidoOperation::Authenticate
@@ -554,6 +557,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                     },
                 ),
             );
+            false
         } else {
             let prepared = pending.prepared.take().unwrap_or_default();
             let output = match details.operation {
@@ -574,6 +578,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 },
             };
             outputs.insert(0, Self::fido(request_id, output));
+            true
         }
     }
 
@@ -947,15 +952,16 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             return vec![Self::fido(id, Self::fido_error())];
         }
 
-        let Some(pending) = self.authorized_fido.take().filter(|pending| {
-            matches!(
+        let Some(pending) = self.authorized_fido.take() else {
+            return vec![Self::fido(id, Self::fido_error())];
+        };
+        if !matches!(
                 &pending.review,
                 ConfirmationDetails::Fido(details)
                     if details.operation == FidoOperation::Register && details.rp_id == rp_id
-            )
-        }) else {
-            return vec![Self::fido(id, Self::fido_error())];
-        };
+        ) {
+            return self.fail_fido_confirmation(id, pending.id);
+        }
 
         let result: Result<PreparedResult> = (|| {
             let nonce = self.platform.random(oskey_chain::fido::NONCE_SIZE);
@@ -972,7 +978,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             })
         })();
 
-        self.start_fido_result_confirmation(id, pending, result)
+        self.restore_fido_confirmation(id, pending, result)
     }
 
     fn handle_fido_credential(
@@ -991,15 +997,16 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             let pending = if preflight {
                 None
             } else {
-                let Some(pending) = self.authorized_fido.take().filter(|pending| {
-                    matches!(
+                let Some(pending) = self.authorized_fido.take() else {
+                    return vec![Self::fido(id, Self::fido_error())];
+                };
+                if !matches!(
                         &pending.review,
                         ConfirmationDetails::Fido(details)
                             if details.operation == FidoOperation::Authenticate
-                    )
-                }) else {
-                    return vec![Self::fido(id, Self::fido_error())];
-                };
+                ) {
+                    return self.fail_fido_confirmation(id, pending.id);
+                }
                 Some(pending)
             };
 
@@ -1008,10 +1015,10 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                     unreachable!();
                 };
                 let Ok(displayed_hash) = crypto::Hash::sha256(details.rp_id.as_bytes()) else {
-                    return vec![Self::fido(id, Self::fido_error())];
+                    return self.fail_fido_confirmation(id, pending.id);
                 };
                 if displayed_hash != rp_id_hash {
-                    return vec![Self::fido(id, Self::fido_error())];
+                    return self.fail_fido_confirmation(id, pending.id);
                 }
             }
 
@@ -1019,7 +1026,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 .load_seed()
                 .and_then(|seed| oskey_chain::fido::sign(&seed, credential_id, rp_id_hash, hash));
             if let Some(pending) = pending {
-                return self.start_fido_result_confirmation(
+                return self.restore_fido_confirmation(
                     id,
                     pending,
                     result.map(|signature| PreparedResult {
@@ -1057,23 +1064,35 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         )]
     }
 
-    fn start_fido_result_confirmation(
+    fn restore_fido_confirmation(
         &mut self,
         request_id: u32,
         mut pending: PendingConfirmation<PendingAction>,
         result: Result<PreparedResult>,
     ) -> Vec<CoreEffect> {
+        let id = pending.id;
         let Ok(prepared) = result else {
-            return vec![Self::fido(request_id, Self::fido_error())];
+            return self.fail_fido_confirmation(request_id, id);
         };
         pending.action = PendingAction::Fido(request_id);
         pending.prepared = Some(prepared);
-        let Some(id) = self.confirmation.resume(pending) else {
-            return vec![Self::fido(request_id, Self::fido_error())];
-        };
+        if !self.confirmation.restore(pending) {
+            return self.fail_fido_confirmation(request_id, id);
+        }
         vec![
             CoreEffect::ConfirmationRequired(id),
             CoreEffect::WalletState(WalletState::Busy),
+        ]
+    }
+
+    fn fail_fido_confirmation(&self, request_id: u32, confirmation_id: u32) -> Vec<CoreEffect> {
+        vec![
+            Self::fido(request_id, Self::fido_error()),
+            CoreEffect::ConfirmationCompleted {
+                id: confirmation_id,
+                outcome: ConfirmationOutcome::Cancelled,
+            },
+            CoreEffect::WalletState(self.state()),
         ]
     }
 
@@ -2133,7 +2152,7 @@ mod tests {
     }
 
     #[test]
-    fn signing_uses_private_key_only_after_first_confirmation() {
+    fn sending_a_signature_does_not_use_the_private_key_again() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
         runtime.platform.seed_read_fails = true;
@@ -2172,27 +2191,15 @@ mod tests {
         assert!(prepared.is_none());
 
         runtime.platform.seed_read_fails = false;
-        let prepared = confirm(&mut runtime, id, ConfirmationChoice::Approve);
+        let updated = confirm(&mut runtime, id, ConfirmationChoice::Approve);
         assert!(matches!(
-            prepared.as_slice(),
+            updated.as_slice(),
             [
-                CoreEffect::ConfirmationCompleted {
-                    id: completed_id,
-                    outcome: ConfirmationOutcome::Approved
-                },
-                CoreEffect::ConfirmationRequired(_),
+                CoreEffect::ConfirmationRequired(updated_id),
                 CoreEffect::WalletState(WalletState::Busy)
-            ] if *completed_id == id
+            ] if *updated_id == id
         ));
-        let prepared_id = prepared
-            .iter()
-            .find_map(|effect| match effect {
-                CoreEffect::ConfirmationRequired(id) => Some(*id),
-                _ => None,
-            })
-            .unwrap();
-        let Some((ConfirmationDetails::EthMessage(_), Some(prepared))) =
-            runtime.confirmation(prepared_id)
+        let Some((ConfirmationDetails::EthMessage(_), Some(prepared))) = runtime.confirmation(id)
         else {
             panic!("expected prepared Ethereum message confirmation");
         };
@@ -2201,7 +2208,7 @@ mod tests {
         assert_eq!(prepared.signature.len(), 64);
 
         runtime.platform.seed_read_fails = true;
-        let completed = confirm(&mut runtime, prepared_id, ConfirmationChoice::Approve);
+        let completed = confirm(&mut runtime, id, ConfirmationChoice::Approve);
         let CoreEffect::Transport(
             _,
             proto::ResData {
@@ -2217,7 +2224,14 @@ mod tests {
         );
         assert_eq!(response.pre_hash, confirmation_hash);
         assert_eq!(response.signature.len(), 64);
-        assert!(runtime.confirmation(prepared_id).is_none());
+        assert!(matches!(
+            &completed[1],
+            CoreEffect::ConfirmationCompleted {
+                id: completed_id,
+                outcome: ConfirmationOutcome::Approved
+            } if *completed_id == id
+        ));
+        assert!(runtime.confirmation(id).is_none());
     }
 
     #[test]
@@ -2311,10 +2325,11 @@ mod tests {
         assert!(prepared.is_none());
 
         runtime.platform.seed_read_fails = false;
-        let prepared = confirm(&mut runtime, first_id, ConfirmationChoice::Approve);
-        let second_id = required_id(&prepared);
+        let updated = confirm(&mut runtime, first_id, ConfirmationChoice::Approve);
+        let updated_id = required_id(&updated);
+        assert_eq!(updated_id, first_id);
         let Some((ConfirmationDetails::EthTransaction(_), Some(prepared))) =
-            runtime.confirmation(second_id)
+            runtime.confirmation(updated_id)
         else {
             panic!("expected prepared Ethereum transaction confirmation");
         };
@@ -2417,7 +2432,7 @@ mod tests {
     }
 
     #[test]
-    fn fido_uses_same_confirmation_service() {
+    fn fido_keeps_confirmation_active_until_the_result_is_ready() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
         let outputs = fido(
@@ -2457,17 +2472,13 @@ mod tests {
                         ..
                     }
                 },
-                CoreEffect::ConfirmationCompleted {
-                    id: completed_id,
-                    outcome: ConfirmationOutcome::Approved
-                },
-                CoreEffect::WalletState(WalletState::Ready)
-            ] if *completed_id == id
+                CoreEffect::WalletState(WalletState::Busy)
+            ]
         ));
     }
 
     #[test]
-    fn fido_approval_does_not_hold_runtime_busy() {
+    fn fido_approval_holds_runtime_busy_until_result_is_ready() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
         let outputs = fido(
@@ -2487,7 +2498,7 @@ mod tests {
             })
             .unwrap();
         confirm(&mut runtime, confirmation_id, ConfirmationChoice::Approve);
-        assert_eq!(runtime.state(), WalletState::Ready);
+        assert_eq!(runtime.state(), WalletState::Busy);
         assert!(matches!(
             protocol(
                 &mut runtime,
@@ -2498,14 +2509,17 @@ mod tests {
             [CoreEffect::Transport(
                 _,
                 proto::ResData {
-                    payload: Some(res_data::Payload::StatusResponse(_))
+                    payload: Some(res_data::Payload::ErrorResponse(proto::ErrorResponse {
+                        code,
+                        ..
+                    }))
                 }
-            )]
+            )] if *code == proto::AppError::Busy as i32
         ));
     }
 
     #[test]
-    fn fido_register_and_authenticate_use_two_confirmations() {
+    fn fido_register_and_authenticate_keep_one_confirmation_id() {
         let mut runtime = WalletRuntime::new(TestPlatform::new(false));
         init(&mut runtime);
         runtime.platform.seed_read_fails = true;
@@ -2545,6 +2559,7 @@ mod tests {
             },
         );
         let registration_id = required_id(&registration);
+        assert_eq!(registration_id, first_id);
         let Some((ConfirmationDetails::Fido(_), Some(prepared))) =
             runtime.confirmation(registration_id)
         else {
@@ -2617,6 +2632,7 @@ mod tests {
             },
         );
         let signing_id = required_id(&signing);
+        assert_eq!(signing_id, presence_id);
         assert!(matches!(
             runtime.confirmation(signing_id),
             Some((ConfirmationDetails::Fido(_), Some(prepared)))
@@ -2664,13 +2680,20 @@ mod tests {
         );
         assert!(matches!(
             result.as_slice(),
-            [CoreEffect::Fido {
-                id: 21,
-                result: FidoOutput {
-                    status: FidoStatus::Failed,
-                    ..
-                }
-            }]
+            [
+                CoreEffect::Fido {
+                    id: 21,
+                    result: FidoOutput {
+                        status: FidoStatus::Failed,
+                        ..
+                    }
+                },
+                CoreEffect::ConfirmationCompleted {
+                    id: completed_id,
+                    outcome: ConfirmationOutcome::Cancelled
+                },
+                CoreEffect::WalletState(WalletState::Ready)
+            ] if *completed_id == id
         ));
     }
 

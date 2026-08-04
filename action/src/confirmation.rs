@@ -34,12 +34,19 @@ impl<T> ConfirmationService<T> {
     }
 
     pub(crate) fn start(&mut self, action: T, review: ConfirmationDetails) -> Option<u32> {
-        self.resume(PendingConfirmation {
-            id: 0,
+        if self.pending.is_some() {
+            return None;
+        }
+
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        self.pending = Some(PendingConfirmation {
+            id,
             action,
             review,
             prepared: None,
-        })
+        });
+        Some(id)
     }
 
     pub(crate) fn get(&self, id: u32) -> Option<(&ConfirmationDetails, Option<&PreparedResult>)> {
@@ -49,16 +56,12 @@ impl<T> ConfirmationService<T> {
             .map(|pending| (&pending.review, pending.prepared.as_ref()))
     }
 
-    pub(crate) fn resume(&mut self, mut pending: PendingConfirmation<T>) -> Option<u32> {
-        if self.pending.is_some() {
-            return None;
+    pub(crate) fn restore(&mut self, pending: PendingConfirmation<T>) -> bool {
+        if self.pending.is_some() || pending.id == 0 {
+            return false;
         }
-
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1).max(1);
-        pending.id = id;
         self.pending = Some(pending);
-        Some(id)
+        true
     }
 
     pub(crate) fn finish(&mut self, id: u32) -> Option<PendingConfirmation<T>> {
