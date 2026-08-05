@@ -210,6 +210,7 @@ pub trait WalletPlatform {
     fn write_seed(&self, data: &[u8]) -> Result<()>;
     fn unlock_failures(&self) -> Result<u8>;
     fn write_unlock_failures(&self, failures: u8) -> bool;
+    fn recover_fido_pin(&self);
     fn reset_storage(&self) -> bool;
     fn restart(&self);
 }
@@ -623,7 +624,10 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                         Self::transport_error(route, proto::AppError::Failed),
                         CoreEffect::WalletState(WalletState::Setup),
                     ],
-                    Err(_) => self.transport_error_output(route, proto::AppError::Failed),
+                    Err(_) => vec![
+                        Self::transport_error(route, proto::AppError::Failed),
+                        CoreEffect::WalletState(WalletState::Locked),
+                    ],
                 }
             }
         };
@@ -658,17 +662,20 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 ]
             }
             Err(UnlockFailure::Attempts(failures)) => {
-                vec![Self::local_error(
-                    proto::AppError::UnlockFailed,
-                    failures.into(),
-                )]
+                vec![
+                    Self::local_error(proto::AppError::UnlockFailed, failures.into()),
+                    CoreEffect::WalletState(WalletState::Locked),
+                ]
             }
             Err(UnlockFailure::Reset) => vec![
                 Self::local_error(proto::AppError::UnlockFailed, MAX_FAILED_UNLOCKS.into()),
                 CoreEffect::WalletState(WalletState::Setup),
             ],
             Err(UnlockFailure::Storage) => {
-                vec![Self::local_error(proto::AppError::Failed, 0)]
+                vec![
+                    Self::local_error(proto::AppError::Failed, 0),
+                    CoreEffect::WalletState(WalletState::Locked),
+                ]
             }
         }
     }
@@ -681,6 +688,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             if self.platform.write_unlock_failures(0) {
                 self.locked = false;
                 self.failed_unlocks = 0;
+                self.platform.recover_fido_pin();
                 return Ok(());
             }
 
@@ -1322,6 +1330,7 @@ mod tests {
         unlock_failures: Rc<RefCell<u8>>,
         random_lengths: Rc<RefCell<Vec<usize>>>,
         reset_calls: Rc<RefCell<usize>>,
+        fido_recovery_calls: Rc<RefCell<usize>>,
         local_ui: bool,
         reset_succeeds: bool,
         seed_check_fails: bool,
@@ -1338,6 +1347,7 @@ mod tests {
                 unlock_failures: Rc::new(RefCell::new(0)),
                 random_lengths: Rc::new(RefCell::new(Vec::new())),
                 reset_calls: Rc::new(RefCell::new(0)),
+                fido_recovery_calls: Rc::new(RefCell::new(0)),
                 local_ui,
                 reset_succeeds: true,
                 seed_check_fails: false,
@@ -1419,6 +1429,10 @@ mod tests {
         fn write_unlock_failures(&self, failures: u8) -> bool {
             *self.unlock_failures.borrow_mut() = failures;
             true
+        }
+
+        fn recover_fido_pin(&self) {
+            *self.fido_recovery_calls.borrow_mut() += 1;
         }
 
         fn reset_storage(&self) -> bool {
@@ -1892,10 +1906,13 @@ mod tests {
                 runtime
                     .handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")))
                     .as_slice(),
-                [CoreEffect::Local(LocalResult {
-                    error: proto::AppError::Failed,
-                    ..
-                })]
+                [
+                    CoreEffect::Local(LocalResult {
+                        error: proto::AppError::Failed,
+                        ..
+                    }),
+                    CoreEffect::WalletState(WalletState::Locked)
+                ]
             ));
         }
         assert_eq!(platform.unlock_failures().unwrap(), 0);
@@ -1945,7 +1962,7 @@ mod tests {
     fn external_unlock_emits_one_reply_and_one_state_change() {
         let platform = TestPlatform::new(false);
         init(&mut WalletRuntime::new(platform.clone()));
-        let mut runtime = WalletRuntime::new(platform);
+        let mut runtime = WalletRuntime::new(platform.clone());
         let mut input = b"Password1!".to_vec();
         input.extend_from_slice(PIN_SALT);
         let hash = crypto::Hash::sha256(&input).unwrap();
@@ -1964,6 +1981,7 @@ mod tests {
                 CoreEffect::WalletState(WalletState::Ready)
             ]
         ));
+        assert_eq!(*platform.fido_recovery_calls.borrow(), 1);
     }
 
     #[test]
@@ -1981,9 +1999,11 @@ mod tests {
                     error: proto::AppError::UnlockFailed,
                     value,
                     ..
-                })] if *value == expected
+                }), CoreEffect::WalletState(WalletState::Locked)] if *value == expected
             ));
         }
+
+        assert_eq!(*platform.fido_recovery_calls.borrow(), 0);
 
         let mut restarted = WalletRuntime::new(platform.clone());
         assert_eq!(restarted.failed_unlocks, 3);
