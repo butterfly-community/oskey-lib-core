@@ -15,6 +15,7 @@ message ReqData
 		InitWalletRequest init_request = 40;
 		DerivePublicKeyRequest derive_public_key_request = 50;
 		SignEthRequest sign_eth_request = 70;
+		FirmwareUpdateRequest firmware_update_request = 90;
 	}
 	reserved 41, 81 to 85;
 	reserved "generate_mnemonic_request", "user_action_request", "device_request",
@@ -33,6 +34,7 @@ message ResData
 		DerivePublicKeyResponse derive_public_key_response = 51;
 		SignResponse sign_response = 61;
 		WaitForUserActionResponse wait_for_user_action_response = 80;
+		FirmwareUpdateResponse firmware_update_response = 100;
 	}
 	reserved 90 to 93;
 	reserved "display_response", "confirmation_prompt", "fido2_response", "confirmation_result";
@@ -176,5 +178,13 @@ message ErrorResponse
 }
 
 message WaitForUserActionResponse
+{
+}
+
+message FirmwareUpdateRequest
+{
+}
+
+message FirmwareUpdateResponse
 {
 }

@@ -213,6 +213,7 @@ pub trait WalletPlatform {
     fn recover_fido_pin(&self);
     fn reset_storage(&self) -> bool;
     fn restart(&self);
+    fn update_firmware(&self) -> bool;
 }
 
 struct PendingSign {
@@ -377,6 +378,22 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 }
             }
             req_data::Payload::SignEthRequest(request) => self.handle_sign_request(route, request),
+            req_data::Payload::FirmwareUpdateRequest(_) => {
+                if self.is_busy() {
+                    return self.transport_error_output(route, proto::AppError::Busy);
+                }
+                if route.transport != Transport::Uart {
+                    return self.transport_error_output(route, proto::AppError::InvalidAction);
+                }
+                if self.platform.update_firmware() {
+                    self.transport_reply(
+                        route,
+                        res_data::Payload::FirmwareUpdateResponse(proto::FirmwareUpdateResponse {}),
+                    )
+                } else {
+                    self.transport_error_output(route, proto::AppError::Failed)
+                }
+            }
         }
     }
 
@@ -1331,6 +1348,7 @@ mod tests {
         random_lengths: Rc<RefCell<Vec<usize>>>,
         reset_calls: Rc<RefCell<usize>>,
         fido_recovery_calls: Rc<RefCell<usize>>,
+        update_calls: Rc<RefCell<usize>>,
         local_ui: bool,
         reset_succeeds: bool,
         seed_check_fails: bool,
@@ -1338,6 +1356,7 @@ mod tests {
         unlock_failures_exists: bool,
         unlock_failures_read_fails: bool,
         random_succeeds: bool,
+        update_succeeds: bool,
     }
 
     impl TestPlatform {
@@ -1348,6 +1367,7 @@ mod tests {
                 random_lengths: Rc::new(RefCell::new(Vec::new())),
                 reset_calls: Rc::new(RefCell::new(0)),
                 fido_recovery_calls: Rc::new(RefCell::new(0)),
+                update_calls: Rc::new(RefCell::new(0)),
                 local_ui,
                 reset_succeeds: true,
                 seed_check_fails: false,
@@ -1355,6 +1375,7 @@ mod tests {
                 unlock_failures_exists: true,
                 unlock_failures_read_fails: false,
                 random_succeeds: true,
+                update_succeeds: true,
             }
         }
     }
@@ -1446,6 +1467,11 @@ mod tests {
         }
 
         fn restart(&self) {}
+
+        fn update_firmware(&self) -> bool {
+            *self.update_calls.borrow_mut() += 1;
+            self.update_succeeds
+        }
     }
 
     fn protocol_request(payload: req_data::Payload) -> proto::ReqData {
@@ -1502,6 +1528,36 @@ mod tests {
             },
             request: request.clone(),
         })
+    }
+
+    #[test]
+    fn firmware_update_is_only_available_over_uart() {
+        let platform = TestPlatform::new(false);
+        let calls = platform.update_calls.clone();
+        let mut runtime = WalletRuntime::new(platform);
+        let request = protocol_request(req_data::Payload::FirmwareUpdateRequest(
+            proto::FirmwareUpdateRequest {},
+        ));
+
+        let outputs = protocol(&mut runtime, Transport::Uart, &request);
+        assert!(matches!(
+            outputs.as_slice(),
+            [CoreEffect::Transport(
+                _,
+                proto::ResData {
+                    payload: Some(res_data::Payload::FirmwareUpdateResponse(_))
+                }
+            )]
+        ));
+
+        let outputs = protocol(&mut runtime, Transport::Bluetooth, &request);
+        assert!(matches!(
+            outputs.as_slice(),
+            [CoreEffect::Transport(_, proto::ResData {
+                payload: Some(res_data::Payload::ErrorResponse(error))
+            })] if error.code == proto::AppError::InvalidAction as i32
+        ));
+        assert_eq!(*calls.borrow(), 1);
     }
 
     fn fido(
