@@ -23,6 +23,14 @@ use confirmation::{ConfirmationService, PendingConfirmation};
 const PIN_SALT: &[u8] = b"&%OSKey1$!@";
 const MAX_FAILED_UNLOCKS: u8 = 10;
 const STORED_SEED_BYTES: usize = 92;
+const ENTROPY_TRANSCRIPT_MAGIC: &[u8; 4] = b"OSEM";
+const ENTROPY_TRANSCRIPT_VERSION: u8 = 1;
+const ENTROPY_TRANSCRIPT_HEADER_SIZE: usize = 10;
+const ENTROPY_TRANSCRIPT_RECORD_SIZE: usize = 41;
+const ENTROPY_SOURCE_HARDWARE_RNG: u8 = 1 << 0;
+const ENTROPY_SOURCE_AUXILIARY_MASK: u8 = 0x1e;
+const ENTROPY_MIXER_SALT: &[u8] = b"OSKEY/MNEMONIC-ENTROPY/V1";
+const ENTROPY_MIXER_INFO: &[u8] = b"OSKEY/BIP39/V1";
 
 fn mnemonic_entropy_bytes(words: u32) -> Result<usize> {
     match words {
@@ -55,6 +63,7 @@ pub enum LocalRequestKind {
     Unlock,
     InitCustom,
     GenerateMnemonic,
+    GenerateMnemonicMixed,
     Restart,
     ResetStorage,
 }
@@ -120,6 +129,10 @@ pub enum LocalRequest<'a> {
     GenerateMnemonic {
         words: u32,
         entropy: &'a [u8],
+    },
+    GenerateMnemonicMixed {
+        words: u32,
+        transcript: &'a [u8],
     },
     Restart,
     ResetStorage,
@@ -411,6 +424,9 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             } => self.handle_local_init_custom(words, passphrase, pin),
             LocalRequest::GenerateMnemonic { words, entropy } => {
                 self.handle_generate_mnemonic(words, entropy)
+            }
+            LocalRequest::GenerateMnemonicMixed { words, transcript } => {
+                self.handle_generate_mnemonic_mixed(words, transcript)
             }
             LocalRequest::Restart => {
                 self.platform.restart();
@@ -753,6 +769,86 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 entropy.to_vec()
             });
             Ok(mnemonic::Mnemonic::from_entropy(&entropy)?.words.join(" "))
+        })();
+
+        match result {
+            Ok(words) => vec![Self::local(LocalAction::Mnemonic, words)],
+            Err(_) => vec![Self::local_error(proto::AppError::Failed, 0)],
+        }
+    }
+
+    fn validate_entropy_transcript(words: u32, transcript: &[u8]) -> Result<()> {
+        if transcript.len() < ENTROPY_TRANSCRIPT_HEADER_SIZE
+            || transcript[..4] != *ENTROPY_TRANSCRIPT_MAGIC
+            || transcript[4] != ENTROPY_TRANSCRIPT_VERSION
+            || transcript[5] as u32 != words
+        {
+            return Err(anyhow!("Invalid entropy transcript header"));
+        }
+
+        let selected = transcript[6];
+        let completed = transcript[7];
+        let skipped = transcript[8];
+        let record_count = transcript[9] as usize;
+        let auxiliary = selected & ENTROPY_SOURCE_AUXILIARY_MASK;
+
+        if (selected & !(ENTROPY_SOURCE_HARDWARE_RNG | ENTROPY_SOURCE_AUXILIARY_MASK)) != 0
+            || (selected & ENTROPY_SOURCE_HARDWARE_RNG) == 0
+            || auxiliary == 0
+            || (completed & !ENTROPY_SOURCE_AUXILIARY_MASK) != 0
+            || (skipped & !ENTROPY_SOURCE_AUXILIARY_MASK) != 0
+            || (completed & skipped) != 0
+            || (completed | skipped) != auxiliary
+            || record_count != completed.count_ones() as usize
+            || transcript.len()
+                != ENTROPY_TRANSCRIPT_HEADER_SIZE + record_count * ENTROPY_TRANSCRIPT_RECORD_SIZE
+        {
+            return Err(anyhow!("Invalid entropy transcript sources"));
+        }
+
+        let mut previous = 0u8;
+        for record in transcript[ENTROPY_TRANSCRIPT_HEADER_SIZE..]
+            .chunks_exact(ENTROPY_TRANSCRIPT_RECORD_SIZE)
+        {
+            let source = record[0];
+
+            if source.count_ones() != 1
+                || (source & ENTROPY_SOURCE_AUXILIARY_MASK) == 0
+                || (completed & source) == 0
+                || source <= previous
+            {
+                return Err(anyhow!("Invalid entropy source record"));
+            }
+            previous = source;
+        }
+        Ok(())
+    }
+
+    fn handle_generate_mnemonic_mixed(&self, words: u32, transcript: &[u8]) -> Vec<CoreEffect> {
+        let result: Result<String> = (|| {
+            let entropy_len = mnemonic_entropy_bytes(words)?;
+            Self::validate_entropy_transcript(words, transcript)?;
+
+            let random = Zeroizing::new(self.platform.random(32));
+            if random.len() != 32 {
+                return Err(anyhow!("Randomness unavailable"));
+            }
+
+            let mut input = Zeroizing::new(Vec::with_capacity(random.len() + transcript.len()));
+            input.extend_from_slice(random.as_ref());
+            input.extend_from_slice(transcript);
+            let prk = crypto::HMAC::hmac_sha512(ENTROPY_MIXER_SALT, input.as_ref())?;
+
+            let mut info = Zeroizing::new(Vec::with_capacity(ENTROPY_MIXER_INFO.len() + 5));
+            info.extend_from_slice(ENTROPY_MIXER_INFO);
+            info.extend_from_slice(&words.to_le_bytes());
+            info.push(1);
+            let output = crypto::HMAC::hmac_sha512(prk.as_ref(), info.as_ref())?;
+            let entropy = Zeroizing::new(output[..entropy_len].to_vec());
+
+            Ok(mnemonic::Mnemonic::from_entropy(entropy.as_ref())?
+                .words
+                .join(" "))
         })();
 
         match result {
@@ -1773,6 +1869,156 @@ mod tests {
         }
 
         assert_eq!(*platform.random_lengths.borrow(), [16, 20, 24, 28, 32]);
+    }
+
+    fn mixed_entropy_transcript(words: u8, digest_byte: u8) -> Vec<u8> {
+        let mut transcript = Vec::with_capacity(ENTROPY_TRANSCRIPT_HEADER_SIZE + 41);
+        transcript.extend_from_slice(ENTROPY_TRANSCRIPT_MAGIC);
+        transcript.extend_from_slice(&[
+            ENTROPY_TRANSCRIPT_VERSION,
+            words,
+            ENTROPY_SOURCE_HARDWARE_RNG | (1 << 1),
+            1 << 1,
+            0,
+            1,
+            1 << 1,
+        ]);
+        transcript.extend_from_slice(&64u32.to_le_bytes());
+        transcript.extend_from_slice(&3000u32.to_le_bytes());
+        transcript.extend_from_slice(&[digest_byte; 32]);
+        transcript
+    }
+
+    fn local_mnemonic(effects: &[CoreEffect]) -> &str {
+        match effects {
+            [CoreEffect::Local(LocalResult {
+                action: LocalAction::Mnemonic,
+                text,
+                ..
+            })] => text,
+            _ => panic!("expected mnemonic result"),
+        }
+    }
+
+    #[test]
+    fn mixed_entropy_uses_fresh_randomness_and_all_source_data() {
+        let platform = TestPlatform::new(true);
+        let mut runtime = WalletRuntime::new(platform.clone());
+        let first = mixed_entropy_transcript(12, 0x11);
+        let second = mixed_entropy_transcript(12, 0x12);
+
+        let first_result =
+            runtime.handle(CoreRequest::Local(LocalRequest::GenerateMnemonicMixed {
+                words: 12,
+                transcript: &first,
+            }));
+        let second_result =
+            runtime.handle(CoreRequest::Local(LocalRequest::GenerateMnemonicMixed {
+                words: 12,
+                transcript: &second,
+            }));
+
+        assert_ne!(
+            local_mnemonic(&first_result),
+            local_mnemonic(&second_result)
+        );
+        assert_eq!(*platform.random_lengths.borrow(), [32, 32]);
+    }
+
+    #[test]
+    fn mixed_entropy_supports_every_ui_word_count() {
+        let platform = TestPlatform::new(true);
+        let mut runtime = WalletRuntime::new(platform.clone());
+
+        for words in [12, 18, 24] {
+            let transcript = mixed_entropy_transcript(words as u8, 0x31);
+            let result = runtime.handle(CoreRequest::Local(LocalRequest::GenerateMnemonicMixed {
+                words,
+                transcript: &transcript,
+            }));
+
+            assert_eq!(
+                local_mnemonic(&result).split_whitespace().count(),
+                words as usize
+            );
+        }
+        assert_eq!(*platform.random_lengths.borrow(), [32, 32, 32]);
+    }
+
+    #[test]
+    fn mixed_entropy_accepts_completed_and_skipped_sources_but_rejects_record_reordering() {
+        let mut transcript = Vec::new();
+        transcript.extend_from_slice(ENTROPY_TRANSCRIPT_MAGIC);
+        transcript.extend_from_slice(&[
+            ENTROPY_TRANSCRIPT_VERSION,
+            12,
+            ENTROPY_SOURCE_HARDWARE_RNG | (1 << 1) | (1 << 2) | (1 << 3),
+            (1 << 1) | (1 << 3),
+            1 << 2,
+            2,
+        ]);
+        for (source, digest) in [(1 << 1, 0x41), (1 << 3, 0x43)] {
+            transcript.push(source);
+            transcript.extend_from_slice(&64u32.to_le_bytes());
+            transcript.extend_from_slice(&3000u32.to_le_bytes());
+            transcript.extend_from_slice(&[digest; 32]);
+        }
+
+        assert!(
+            WalletRuntime::<TestPlatform>::validate_entropy_transcript(12, &transcript).is_ok()
+        );
+        transcript.swap(10, 51);
+        assert!(
+            WalletRuntime::<TestPlatform>::validate_entropy_transcript(12, &transcript).is_err()
+        );
+    }
+
+    #[test]
+    fn mixed_entropy_rejects_malformed_or_incomplete_transcripts() {
+        let platform = TestPlatform::new(true);
+        let mut runtime = WalletRuntime::new(platform.clone());
+        let mut missing_rng = mixed_entropy_transcript(12, 0x21);
+        missing_rng[6] &= !ENTROPY_SOURCE_HARDWARE_RNG;
+        let mut incomplete = mixed_entropy_transcript(12, 0x22);
+        incomplete[7] = 0;
+
+        for transcript in [&missing_rng[..], &incomplete[..], b"short"] {
+            assert!(matches!(
+                runtime
+                    .handle(CoreRequest::Local(LocalRequest::GenerateMnemonicMixed {
+                        words: 12,
+                        transcript,
+                    }))
+                    .as_slice(),
+                [CoreEffect::Local(LocalResult {
+                    action: LocalAction::Error,
+                    ..
+                })]
+            ));
+        }
+        assert!(platform.random_lengths.borrow().is_empty());
+    }
+
+    #[test]
+    fn mixed_entropy_fails_when_hardware_randomness_is_unavailable() {
+        let mut platform = TestPlatform::new(true);
+        platform.random_succeeds = false;
+        let mut runtime = WalletRuntime::new(platform.clone());
+        let transcript = mixed_entropy_transcript(12, 0x31);
+
+        assert!(matches!(
+            runtime
+                .handle(CoreRequest::Local(LocalRequest::GenerateMnemonicMixed {
+                    words: 12,
+                    transcript: &transcript,
+                }))
+                .as_slice(),
+            [CoreEffect::Local(LocalResult {
+                action: LocalAction::Error,
+                ..
+            })]
+        ));
+        assert_eq!(*platform.random_lengths.borrow(), [32]);
     }
 
     #[test]
