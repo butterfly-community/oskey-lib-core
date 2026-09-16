@@ -66,6 +66,8 @@ pub enum LocalRequestKind {
     GenerateMnemonicMixed,
     Restart,
     ResetStorage,
+    Lock,
+    RefreshSecureStorage,
 }
 
 #[repr(C)]
@@ -92,6 +94,7 @@ pub enum LocalAction {
     Ready,
     Mnemonic,
     Error,
+    Updated,
 }
 
 #[repr(C)]
@@ -136,6 +139,8 @@ pub enum LocalRequest<'a> {
     },
     Restart,
     ResetStorage,
+    Lock,
+    RefreshSecureStorage,
 }
 
 pub enum FidoRequest<'a> {
@@ -211,7 +216,29 @@ pub enum CoreRequest<'a> {
     },
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum SeedError {
+    Credentials,
+    Storage,
+}
+
 pub trait WalletPlatform {
+    fn secure_seed_enabled(&self) -> bool {
+        false
+    }
+    fn secure_seed_initialize(&self, _pin: &[u8; 32], _seed: &[u8; 64]) -> Result<()> {
+        Err(anyhow!("Secure seed storage unavailable"))
+    }
+    fn secure_seed_unlock(
+        &self,
+        _pin: &[u8; 32],
+        _seed: &mut [u8; 64],
+    ) -> core::result::Result<(), SeedError> {
+        Err(SeedError::Storage)
+    }
+    fn secure_seed_refresh(&self) -> bool {
+        false
+    }
     fn version(&self) -> String;
     fn serial_number(&self) -> String;
     fn support_mask(&self) -> Vec<u8>;
@@ -245,14 +272,10 @@ enum UnlockFailure {
     Storage,
 }
 
-enum SeedLoadError {
-    Credentials,
-    Storage,
-}
-
 pub struct WalletRuntime<P> {
     platform: P,
     pin_cache: [u8; 32],
+    secure_seed: Option<Zeroizing<[u8; 64]>>,
     locked: bool,
     failed_unlocks: u8,
     storage_failed: bool,
@@ -270,14 +293,17 @@ impl<P: WalletPlatform> WalletRuntime<P> {
     pub fn new(platform: P) -> Self {
         let (mut locked, mut failed_unlocks, storage_failed) = match platform.seed_exists() {
             Ok(false) => (false, 0, false),
+            Ok(true) if platform.secure_seed_enabled() => (true, 0, false),
             Ok(true) => match platform.unlock_failures() {
                 Ok(failures) => (true, failures.min(MAX_FAILED_UNLOCKS), false),
                 Err(_) => (true, MAX_FAILED_UNLOCKS, true),
             },
+            Err(_) if platform.secure_seed_enabled() => (true, 0, true),
             Err(_) => (true, MAX_FAILED_UNLOCKS, true),
         };
 
         if locked
+            && !platform.secure_seed_enabled()
             && !storage_failed
             && failed_unlocks >= MAX_FAILED_UNLOCKS
             && platform.reset_storage()
@@ -289,6 +315,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         Self {
             platform,
             pin_cache: [0; 32],
+            secure_seed: None,
             locked,
             failed_unlocks,
             storage_failed,
@@ -302,7 +329,8 @@ impl<P: WalletPlatform> WalletRuntime<P> {
     }
 
     pub fn handle(&mut self, request: CoreRequest<'_>) -> Vec<CoreEffect> {
-        match request {
+        let previous = self.platform.secure_seed_enabled().then(|| self.state());
+        let mut effects = match request {
             CoreRequest::Protocol { route, request: _ } if self.is_busy() => {
                 self.transport_error_output(route, proto::AppError::Busy)
             }
@@ -313,7 +341,25 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             CoreRequest::Local(request) => self.handle_local(request),
             CoreRequest::Fido { id, request } => self.handle_fido(id, request),
             CoreRequest::Confirm { id, choice } => self.handle_confirmation(id, choice),
+        };
+        if self.platform.secure_seed_enabled() {
+            self.pin_cache.zeroize();
+            let state = self.state();
+            if previous != Some(state)
+                && !effects
+                    .iter()
+                    .any(|effect| matches!(effect, CoreEffect::WalletState(_)))
+            {
+                effects.push(CoreEffect::WalletState(state));
+            }
         }
+        effects
+    }
+
+    fn lock_wallet(&mut self) {
+        self.locked = true;
+        self.pin_cache.zeroize();
+        self.secure_seed = None;
     }
 
     fn is_busy(&self) -> bool {
@@ -367,8 +413,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 self.transport_reply(route, self.status_response())
             }
             req_data::Payload::LockRequest(_) => {
-                self.locked = true;
-                self.pin_cache.zeroize();
+                self.lock_wallet();
                 vec![
                     Self::transport(route, self.status_response()),
                     CoreEffect::WalletState(self.state()),
@@ -398,6 +443,9 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 if route.transport != Transport::Uart {
                     return self.transport_error_output(route, proto::AppError::InvalidAction);
                 }
+                if self.platform.secure_seed_enabled() {
+                    self.lock_wallet();
+                }
                 if self.platform.update_firmware() {
                     self.transport_reply(
                         route,
@@ -416,6 +464,24 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         }
 
         match request {
+            LocalRequest::Lock => {
+                self.lock_wallet();
+                vec![
+                    CoreEffect::WalletState(self.state()),
+                    Self::local(LocalAction::Updated, String::new()),
+                ]
+            }
+            LocalRequest::RefreshSecureStorage => {
+                if !self.platform.secure_seed_enabled() {
+                    return vec![Self::local_error(proto::AppError::InvalidAction, 0)];
+                }
+                self.lock_wallet();
+                self.storage_failed = !self.platform.secure_seed_refresh();
+                vec![
+                    CoreEffect::WalletState(self.state()),
+                    Self::local(LocalAction::Updated, String::new()),
+                ]
+            }
             LocalRequest::Unlock(pin) => self.handle_local_unlock(pin),
             LocalRequest::InitCustom {
                 words,
@@ -429,15 +495,25 @@ impl<P: WalletPlatform> WalletRuntime<P> {
                 self.handle_generate_mnemonic_mixed(words, transcript)
             }
             LocalRequest::Restart => {
+                if self.platform.secure_seed_enabled() {
+                    self.lock_wallet();
+                }
                 self.platform.restart();
                 Vec::new()
             }
             LocalRequest::ResetStorage => {
+                if self.platform.secure_seed_enabled() {
+                    self.lock_wallet();
+                }
                 if self.platform.reset_storage() {
                     self.storage_reset_succeeded();
                     vec![CoreEffect::WalletState(WalletState::Setup)]
                 } else {
-                    vec![Self::local_error(proto::AppError::Failed, 0)]
+                    let mut effects = vec![Self::local_error(proto::AppError::Failed, 0)];
+                    if self.platform.secure_seed_enabled() {
+                        effects.push(CoreEffect::WalletState(self.state()));
+                    }
+                    effects
                 }
             }
         }
@@ -628,6 +704,9 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         route: TransportRoute,
         mut request: proto::UnlockRequest,
     ) -> Vec<CoreEffect> {
+        if self.platform.secure_seed_enabled() {
+            self.lock_wallet();
+        }
         let effects = match self.seed_exists() {
             Err(_) => self.transport_error_output(route, proto::AppError::Failed),
             Ok(false) => self.transport_error_output(route, proto::AppError::InvalidAction),
@@ -637,14 +716,17 @@ impl<P: WalletPlatform> WalletRuntime<P> {
             Ok(true) if request.hash.len() != 32 => {
                 self.transport_error_output(route, proto::AppError::InvalidAction)
             }
-            Ok(true) if self.failed_unlocks >= MAX_FAILED_UNLOCKS => {
+            Ok(true)
+                if !self.platform.secure_seed_enabled()
+                    && self.failed_unlocks >= MAX_FAILED_UNLOCKS =>
+            {
                 self.transport_error_output(route, proto::AppError::Failed)
             }
             Ok(true) => {
                 let result = self
                     .set_pin_hash(&request.hash)
-                    .map_err(|_| SeedLoadError::Storage)
-                    .and_then(|_| self.load_seed_classified().map(|_| ()));
+                    .map_err(|_| SeedError::Storage)
+                    .and_then(|_| self.authenticate_seed());
 
                 match self.complete_unlock(result) {
                     Ok(()) => {
@@ -669,13 +751,16 @@ impl<P: WalletPlatform> WalletRuntime<P> {
     }
 
     fn handle_local_unlock(&mut self, pin: &str) -> Vec<CoreEffect> {
+        if self.platform.secure_seed_enabled() {
+            self.lock_wallet();
+        }
         match self.seed_exists() {
             Err(_) => return vec![Self::local_error(proto::AppError::Failed, 0)],
             Ok(false) => return vec![Self::local_error(proto::AppError::InvalidAction, 0)],
             Ok(true) => {}
         }
 
-        if self.failed_unlocks >= MAX_FAILED_UNLOCKS {
+        if !self.platform.secure_seed_enabled() && self.failed_unlocks >= MAX_FAILED_UNLOCKS {
             return vec![Self::local_error(
                 proto::AppError::UnlockFailed,
                 MAX_FAILED_UNLOCKS.into(),
@@ -684,8 +769,8 @@ impl<P: WalletPlatform> WalletRuntime<P> {
 
         let result = self
             .set_pin_text(pin)
-            .map_err(|_| SeedLoadError::Storage)
-            .and_then(|_| self.load_seed_classified().map(|_| ()));
+            .map_err(|_| SeedError::Storage)
+            .and_then(|_| self.authenticate_seed());
 
         match self.complete_unlock(result) {
             Ok(()) => {
@@ -715,8 +800,21 @@ impl<P: WalletPlatform> WalletRuntime<P> {
 
     fn complete_unlock(
         &mut self,
-        result: core::result::Result<(), SeedLoadError>,
+        result: core::result::Result<(), SeedError>,
     ) -> core::result::Result<(), UnlockFailure> {
+        if self.platform.secure_seed_enabled() {
+            self.pin_cache.zeroize();
+            self.locked = result.is_err();
+            if result.is_ok() {
+                self.platform.recover_fido_pin();
+                return Ok(());
+            }
+            self.secure_seed = None;
+            return Err(match result {
+                Err(SeedError::Credentials) => UnlockFailure::Attempts(0),
+                _ => UnlockFailure::Storage,
+            });
+        }
         if result.is_ok() {
             if self.platform.write_unlock_failures(0) {
                 self.locked = false;
@@ -732,7 +830,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
 
         self.locked = true;
         self.pin_cache.zeroize();
-        if matches!(result, Err(SeedLoadError::Storage)) {
+        if matches!(result, Err(SeedError::Storage)) {
             return Err(UnlockFailure::Storage);
         }
         let failures = self.failed_unlocks.saturating_add(1);
@@ -752,6 +850,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
 
     fn storage_reset_succeeded(&mut self) {
         self.pin_cache.zeroize();
+        self.secure_seed = None;
         self.storage_failed = false;
         self.locked = false;
         self.failed_unlocks = 0;
@@ -942,7 +1041,7 @@ impl<P: WalletPlatform> WalletRuntime<P> {
 
     fn initialize_seed(&mut self, mnemonic: &mnemonic::Mnemonic, passphrase: &str) -> Result<()> {
         let mut seed = mnemonic.to_seed(passphrase)?;
-        if !self.platform.write_unlock_failures(0) {
+        if !self.platform.secure_seed_enabled() && !self.platform.write_unlock_failures(0) {
             seed.zeroize();
             return Err(anyhow!("Failed to initialize unlock counter"));
         }
@@ -1309,7 +1408,18 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         Ok(())
     }
 
-    fn save_seed(&self, seed: &[u8]) -> Result<()> {
+    fn save_seed(&mut self, seed: &[u8]) -> Result<()> {
+        if self.platform.secure_seed_enabled() {
+            self.secure_seed = None;
+            let seed: &[u8; 64] = seed
+                .try_into()
+                .map_err(|_| anyhow!("Invalid seed length"))?;
+            let result = self.platform.secure_seed_initialize(&self.pin_cache, seed);
+            self.pin_cache.zeroize();
+            result?;
+            self.secure_seed = Some(Zeroizing::new(*seed));
+            return Ok(());
+        }
         let nonce_bytes = self.platform.random(12);
         if nonce_bytes.len() != 12 {
             return Err(anyhow!("Random source returned an invalid nonce"));
@@ -1324,21 +1434,40 @@ impl<P: WalletPlatform> WalletRuntime<P> {
         self.platform.write_seed(&stored)
     }
 
-    fn load_seed_classified(&self) -> core::result::Result<Zeroizing<Vec<u8>>, SeedLoadError> {
+    fn authenticate_seed(&mut self) -> core::result::Result<(), SeedError> {
+        if !self.platform.secure_seed_enabled() {
+            return self.load_seed_classified().map(|_| ());
+        }
+        self.secure_seed = None;
+        let mut seed = Zeroizing::new([0; 64]);
+        self.platform
+            .secure_seed_unlock(&self.pin_cache, &mut seed)?;
+        self.secure_seed = Some(seed);
+        Ok(())
+    }
+
+    fn load_seed_classified(&self) -> core::result::Result<Zeroizing<Vec<u8>>, SeedError> {
+        if self.platform.secure_seed_enabled() {
+            return self
+                .secure_seed
+                .as_ref()
+                .map(|seed| Zeroizing::new(seed.to_vec()))
+                .ok_or(SeedError::Storage);
+        }
         let mut stored = vec![0; 128];
         let len = self
             .platform
             .read_seed(&mut stored)
-            .map_err(|_| SeedLoadError::Storage)?;
+            .map_err(|_| SeedError::Storage)?;
         if len != STORED_SEED_BYTES {
-            return Err(SeedLoadError::Storage);
+            return Err(SeedError::Storage);
         }
         stored.truncate(len);
 
         let mut nonce = [0; 12];
         nonce.copy_from_slice(&stored[..12]);
         let seed = crypto::ChaCha20Poly1305Cipher::decrypt(&self.pin_cache, &nonce, &stored[12..])
-            .map_err(|_| SeedLoadError::Credentials)?;
+            .map_err(|_| SeedError::Credentials)?;
         Ok(Zeroizing::new(seed))
     }
 
@@ -1439,6 +1568,10 @@ mod tests {
 
     #[derive(Clone)]
     struct TestPlatform {
+        secure: bool,
+        secure_pin: Rc<RefCell<[u8; 32]>>,
+        secure_attempts: Rc<RefCell<u8>>,
+        secure_reads: Rc<RefCell<usize>>,
         seed: Rc<RefCell<Vec<u8>>>,
         unlock_failures: Rc<RefCell<u8>>,
         random_lengths: Rc<RefCell<Vec<usize>>>,
@@ -1458,6 +1591,10 @@ mod tests {
     impl TestPlatform {
         fn new(local_ui: bool) -> Self {
             Self {
+                secure: false,
+                secure_pin: Rc::new(RefCell::new([0; 32])),
+                secure_attempts: Rc::new(RefCell::new(0)),
+                secure_reads: Rc::new(RefCell::new(0)),
                 seed: Rc::new(RefCell::new(Vec::new())),
                 unlock_failures: Rc::new(RefCell::new(0)),
                 random_lengths: Rc::new(RefCell::new(Vec::new())),
@@ -1477,6 +1614,44 @@ mod tests {
     }
 
     impl WalletPlatform for TestPlatform {
+        fn secure_seed_enabled(&self) -> bool {
+            self.secure
+        }
+        fn secure_seed_refresh(&self) -> bool {
+            !self.seed_check_fails
+        }
+        fn secure_seed_initialize(&self, pin: &[u8; 32], seed: &[u8; 64]) -> Result<()> {
+            assert!(self.secure && seed.len() == 64);
+            if self.seed_read_fails {
+                return Err(anyhow!("Chip failure"));
+            }
+            *self.secure_pin.borrow_mut() = *pin;
+            *self.seed.borrow_mut() = seed.to_vec();
+            Ok(())
+        }
+        fn secure_seed_unlock(
+            &self,
+            pin: &[u8; 32],
+            seed: &mut [u8; 64],
+        ) -> core::result::Result<(), SeedError> {
+            assert!(self.secure);
+            *self.secure_reads.borrow_mut() += 1;
+            if self.seed_read_fails {
+                seed.fill(0xaa);
+                return Err(SeedError::Storage);
+            }
+            let mut attempts = self.secure_attempts.borrow_mut();
+            if *attempts >= 10 {
+                return Err(SeedError::Credentials);
+            }
+            if pin != &*self.secure_pin.borrow() {
+                *attempts += 1;
+                return Err(SeedError::Credentials);
+            }
+            *attempts = 0;
+            seed.copy_from_slice(&self.seed.borrow());
+            Ok(())
+        }
         fn version(&self) -> String {
             "1.0.0".into()
         }
@@ -1517,6 +1692,7 @@ mod tests {
         }
 
         fn read_seed(&self, data: &mut [u8]) -> Result<usize> {
+            assert!(!self.secure, "secure backend must not read software seed");
             if self.seed_read_fails {
                 return Err(anyhow!("Seed read failed"));
             }
@@ -1529,11 +1705,13 @@ mod tests {
         }
 
         fn write_seed(&self, data: &[u8]) -> Result<()> {
+            assert!(!self.secure, "secure backend must not write software seed");
             *self.seed.borrow_mut() = data.to_vec();
             Ok(())
         }
 
         fn unlock_failures(&self) -> Result<u8> {
+            assert!(!self.secure, "chip owns the secure retry counter");
             if self.unlock_failures_read_fails {
                 Err(anyhow!("Unlock counter read failed"))
             } else if !self.unlock_failures_exists {
@@ -1544,6 +1722,7 @@ mod tests {
         }
 
         fn write_unlock_failures(&self, failures: u8) -> bool {
+            assert!(!self.secure, "chip owns the secure retry counter");
             *self.unlock_failures.borrow_mut() = failures;
             true
         }
@@ -1558,6 +1737,8 @@ mod tests {
                 return false;
             }
             self.seed.borrow_mut().clear();
+            *self.secure_attempts.borrow_mut() = 0;
+            self.secure_pin.borrow_mut().zeroize();
             *self.unlock_failures.borrow_mut() = 0;
             true
         }
@@ -1606,6 +1787,173 @@ mod tests {
                 "1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
             )
         );
+    }
+
+    #[test]
+    fn secure_storage_recovers_after_startup_connection_failure() {
+        for local_ui in [true, false] {
+            let mut platform = TestPlatform::new(local_ui);
+            platform.secure = true;
+            let mut runtime = WalletRuntime::new(platform.clone());
+            init(&mut runtime);
+            platform.seed_check_fails = true;
+            runtime = WalletRuntime::new(platform);
+            assert_eq!(runtime.state(), WalletState::Disabled);
+            runtime.platform.seed_check_fails = false;
+            let effects = runtime.handle(CoreRequest::Local(LocalRequest::RefreshSecureStorage));
+            assert!(effects.iter().any(|effect| matches!(
+                effect,
+                CoreEffect::Local(LocalResult {
+                    action: LocalAction::Updated,
+                    ..
+                })
+            )));
+            assert_eq!(runtime.state(), WalletState::Locked);
+            if local_ui {
+                runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+            } else {
+                let mut input = b"Password1!".to_vec();
+                input.extend_from_slice(PIN_SALT);
+                let hash = crypto::Hash::sha256(&input).unwrap().to_vec();
+                protocol(
+                    &mut runtime,
+                    Transport::Uart,
+                    &protocol_request(req_data::Payload::UnlockRequest(proto::UnlockRequest {
+                        hash,
+                    })),
+                );
+            }
+            assert_eq!(runtime.state(), WalletState::Ready);
+        }
+    }
+
+    #[test]
+    fn secure_early_unlock_failure_and_update_clear_cached_seed() {
+        let mut platform = TestPlatform::new(false);
+        platform.secure = true;
+        let mut runtime = WalletRuntime::new(platform);
+        init(&mut runtime);
+        runtime.platform.seed_check_fails = true;
+        runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        assert!(runtime.locked && runtime.secure_seed.is_none());
+        runtime.platform.seed_check_fails = false;
+        runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        assert!(runtime.load_seed().is_ok());
+        runtime.platform.update_succeeds = false;
+        let effects = protocol(
+            &mut runtime,
+            Transport::Uart,
+            &protocol_request(req_data::Payload::FirmwareUpdateRequest(
+                proto::FirmwareUpdateRequest {},
+            )),
+        );
+        assert!(runtime.locked && runtime.secure_seed.is_none());
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, CoreEffect::WalletState(WalletState::Locked))));
+    }
+
+    #[test]
+    fn secure_invalid_mnemonic_does_not_retain_pin() {
+        let mut platform = TestPlatform::new(true);
+        platform.secure = true;
+        let mut runtime = WalletRuntime::new(platform);
+        runtime.handle(CoreRequest::Local(LocalRequest::InitCustom {
+            words: "invalid",
+            passphrase: "",
+            pin: "Password1!",
+        }));
+        assert_eq!(runtime.pin_cache, [0; 32]);
+        assert!(runtime.secure_seed.is_none());
+    }
+
+    #[test]
+    fn secure_seed_lockout_survives_runtime_restart_until_explicit_erase() {
+        let mut platform = TestPlatform::new(true);
+        platform.secure = true;
+        let mut runtime = WalletRuntime::new(platform.clone());
+        init(&mut runtime);
+        assert_eq!(runtime.pin_cache, [0; 32]);
+        let expected = runtime.load_seed().unwrap();
+        runtime.handle(CoreRequest::Local(LocalRequest::Lock));
+        assert!(runtime.secure_seed.is_none() && runtime.load_seed().is_err());
+        for _ in 0..9 {
+            runtime.handle(CoreRequest::Local(LocalRequest::Unlock("wrong")));
+            runtime = WalletRuntime::new(platform.clone());
+            assert_eq!(runtime.state(), WalletState::Locked);
+        }
+        runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        assert_eq!(&*runtime.load_seed().unwrap(), &*expected);
+        assert_eq!(*platform.secure_attempts.borrow(), 0);
+        for _ in 0..10 {
+            runtime.handle(CoreRequest::Local(LocalRequest::Unlock("wrong")));
+        }
+        runtime = WalletRuntime::new(platform.clone());
+        runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        assert_eq!(runtime.state(), WalletState::Locked);
+        assert!(runtime.secure_seed.is_none());
+        assert_eq!(*platform.reset_calls.borrow(), 0);
+        assert_eq!(platform.seed.borrow().len(), 64);
+        runtime.handle(CoreRequest::Local(LocalRequest::ResetStorage));
+        assert_eq!(runtime.state(), WalletState::Setup);
+        init(&mut runtime);
+        assert_eq!(runtime.state(), WalletState::Ready);
+    }
+
+    #[test]
+    fn secure_failures_clear_cached_seed_without_software_fallback() {
+        let mut platform = TestPlatform::new(true);
+        platform.secure = true;
+        let mut runtime = WalletRuntime::new(platform);
+        init(&mut runtime);
+        runtime.platform.seed_read_fails = true;
+        runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        assert!(runtime.secure_seed.is_none() && runtime.load_seed().is_err());
+        assert_eq!(runtime.pin_cache, [0; 32]);
+        assert_eq!(*runtime.platform.secure_attempts.borrow(), 0);
+        runtime.platform.seed_read_fails = false;
+        runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        assert!(runtime.load_seed().is_ok());
+        runtime.handle(CoreRequest::Local(LocalRequest::RefreshSecureStorage));
+        assert_eq!(runtime.state(), WalletState::Locked);
+        assert!(runtime.secure_seed.is_none());
+        runtime.handle(CoreRequest::Local(LocalRequest::Unlock("Password1!")));
+        runtime.platform.reset_succeeds = false;
+        runtime.handle(CoreRequest::Local(LocalRequest::ResetStorage));
+        assert!(runtime.secure_seed.is_none() && runtime.locked);
+    }
+
+    #[test]
+    fn secure_cached_seed_matches_software_wallet_signing() {
+        let mut software = WalletRuntime::new(TestPlatform::new(false));
+        init(&mut software);
+        let mut platform = TestPlatform::new(false);
+        platform.secure = true;
+        let mut secure = WalletRuntime::new(platform);
+        init(&mut secure);
+        assert_eq!(
+            &*software.load_seed().unwrap(),
+            &*secure.load_seed().unwrap()
+        );
+        let request = protocol_request(sign_request("hello".into()));
+        let software_result = protocol(&mut software, Transport::Uart, &request);
+        secure.platform.seed_read_fails = true;
+        let secure_result = protocol(&mut secure, Transport::Uart, &request);
+        let a = required_id(&software_result);
+        let b = required_id(&secure_result);
+        software.handle(CoreRequest::Confirm {
+            id: a,
+            choice: ConfirmationChoice::Approve,
+        });
+        secure.handle(CoreRequest::Confirm {
+            id: b,
+            choice: ConfirmationChoice::Approve,
+        });
+        let prepared_a = software.confirmation(a).unwrap().1.unwrap();
+        let prepared_b = secure.confirmation(b).unwrap().1.unwrap();
+        assert!(!prepared_a.signature.is_empty());
+        assert_eq!(prepared_a, prepared_b);
+        assert_eq!(*secure.platform.secure_reads.borrow(), 0);
     }
 
     fn protocol(
